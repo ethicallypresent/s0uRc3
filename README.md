@@ -13,16 +13,23 @@ python main.py
 
 Double-click `dist/Kurama-Portable/Kurama.exe` after a portable build (name inherited from the fork; unrenamed). The console stays open: you type a goal, s0uRc3 streams **thinking**, then the **answer**, and **asks before every tool**.
 
+### Two TUIs
+
+`python main.py` opens the **simplified TUI** (`tui/simple_app.py`) by default — no in-app model picker or config screens; pick the model with `--model` or the `brain/reasoning_config.json` default, switch later with `/model`. It exists because the original TUI redraws on *every token* (a full widget rebuild + a full-buffer rescan + a DOM query + a scroll, per token, with no batching — visibly stutters on a fast local model). The simplified one buffers tokens off the UI thread and redraws at a fixed ~20Hz tick no matter how fast the model streams, so the terminal repaints smoothly instead of flooding.
+
+The original full TUI (`tui/app.py` — in-app model picker, `/models`/`/config` screens) is still there, dormant by default: `python main.py --classic-tui`.
+
 | Command | What |
 | --- | --- |
-| `python main.py` | Terminal GUI loop (asks which llama-server / GGUF model to use) |
+| `python main.py` | Simplified TUI (asks nothing; uses `--model` or the config default) |
+| `python main.py --classic-tui` | Original TUI (asks which llama-server / GGUF model to use) |
 | `python main.py --dry-run` | GUI with deterministic policy (no LLM) |
-| `python main.py --model path-or-id` | Skip the picker and use that GGUF or server id |
+| `python main.py --model path-or-id` | Use that GGUF path or server id instead of the config default |
 | `python main.py --once "List the workspace"` | One-shot JSON run (scripts/CI) |
 | `python main.py --once --dry-run "List the workspace"` | One-shot dry-run |
 | `python tests/test_scaffold.py` | Stdlib scaffold tests |
 
-Slash commands inside the GUI: `/help` `/models` `/config` `/preset` `/dry-run` `/reward` `/clear` `/quit`. F2 models, F3 config, Esc stops a run. Permission dialog: `y` allow, `n` deny, `a` allow this tool for the rest of the run.
+Simplified-TUI slash commands: `/help` `/model [spec]` `/dry-run` `/reward` `/clear` `/quit`. Classic TUI adds `/models` `/config` `/preset` `/load` `/stop-server`, plus F2/F3. Esc stops a run in either. Permission dialog: `y` allow, `n` deny, `a` allow this tool for the rest of the run.
 
 ## Tools
 

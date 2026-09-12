@@ -121,6 +121,11 @@ def main() -> int:
     ap.add_argument("goal", nargs="?", help="Goal for a one-shot run (omit to open the TUI)")
     ap.add_argument("--once", action="store_true", help="One-shot JSON run (do not open the TUI)")
     ap.add_argument("--tui", action="store_true", help="Force the looping terminal GUI")
+    ap.add_argument(
+        "--classic-tui",
+        action="store_true",
+        help="Use the original full TUI (model picker + config screens) instead of the simplified one",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Skip the LLM, use deterministic policy")
     ap.add_argument("--max-steps", type=int, default=None, help="Cap on reasoning steps")
     ap.add_argument("--stream", action="store_true", default=True, help="Stream think/text tokens to stdout")
@@ -139,9 +144,13 @@ def main() -> int:
             from core.desktop import install_desktop_shortcut
 
             install_desktop_shortcut()
-        from tui.app import run_app
+        if args.classic_tui:
+            from tui.app import run_app
 
-        return run_app(dry_run=args.dry_run, max_steps=args.max_steps, model=args.model)
+            return run_app(dry_run=args.dry_run, max_steps=args.max_steps, model=args.model)
+        from tui.simple_app import run_simple_app
+
+        return run_simple_app(dry_run=args.dry_run, max_steps=args.max_steps, model=args.model)
 
     goal = (args.goal or input("goal> ")).strip()
     if not goal:
