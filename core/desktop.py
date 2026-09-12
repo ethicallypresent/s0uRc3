@@ -1,7 +1,8 @@
-"""Desktop shortcut for the Kurama console exe (Windows).
+"""Desktop shortcut for the s0uRc3 console agent (Windows).
 
-The .lnk is the cross-language handle: name Kurama, target the exe, working
-directory the agent root. No extra packages — PowerShell COM only.
+The .lnk is the cross-language handle: name s0uRc3, target the exe (or the
+system Python + main.py when not frozen), working directory the agent
+root. No extra packages — PowerShell COM only.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any
 
 log = logging.getLogger("agent.desktop")
 
-SHORTCUT_NAME = "Kurama.lnk"
+SHORTCUT_NAME = "s0uRc3.lnk"
 
 
 def desktop_dir() -> Path | None:
@@ -68,7 +69,7 @@ def shortcut_script(
     target: Path,
     working_directory: Path,
     arguments: str = "",
-    description: str = "Kurama local agent",
+    description: str = "s0uRc3 local Builder Agent",
 ) -> str:
     icon = str(target) if target.suffix.lower() == ".exe" else ""
     lines = [
