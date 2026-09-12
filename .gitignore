@@ -5,6 +5,7 @@ __pycache__/
 
 # Build output (regenerable via scripts/publish_portable.py)
 dist/
+build/
 ui/KuramaStudio/bin/
 ui/KuramaStudio/obj/
 

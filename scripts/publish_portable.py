@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build dist/Kurama-Portable — double-click Kurama.exe opens the terminal GUI."""
+"""Build dist/s0uRc3-Portable — double-click s0uRc3.exe opens the terminal GUI."""
 from __future__ import annotations
 
 import os
@@ -9,11 +9,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = ROOT / "dist" / "Kurama-Portable"
-PYI_DIST = ROOT / "dist" / "Kurama"
-SPEC = ROOT / "kurama.spec"
+DIST = ROOT / "dist" / "s0uRc3-Portable"
+PYI_DIST = ROOT / "dist" / "s0uRc3"
+SPEC = ROOT / "s0urc3.spec"
 
-COPY_DIRS = ("brain", "core", "tui", "db", "skills", "tools", "models", "workspace", "tests", "data")
+COPY_DIRS = ("brain", "core", "tui", "db", "skills", "tools", "models", "workspace", "tests", "data", "creatorcentral")
 COPY_FILES = ("main.py", "requirements.txt")
 
 
@@ -41,7 +41,7 @@ def main() -> int:
     print("==> Installing build deps (textual, pyinstaller)…")
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "textual>=0.80.0", "pyinstaller>=6.0.0"])
 
-    print("==> PyInstaller onedir Kurama.exe…")
+    print("==> PyInstaller onedir s0uRc3.exe…")
     cmd = [
         sys.executable,
         "-m",
@@ -52,10 +52,10 @@ def main() -> int:
     ]
     subprocess.check_call(cmd, cwd=ROOT)
 
-    exe = PYI_DIST / "Kurama.exe"
+    exe = PYI_DIST / "s0uRc3.exe"
     if not exe.exists():
         # Linux/mac fallback
-        alt = PYI_DIST / "Kurama"
+        alt = PYI_DIST / "s0uRc3"
         if not alt.exists():
             print(f"ERROR: missing {exe}", file=sys.stderr)
             return 1
@@ -100,13 +100,13 @@ def main() -> int:
     (DIST / "README.txt").write_text(
         "\n".join(
             [
-                "Kurama Portable",
+                "s0uRc3 Portable",
                 "===============",
                 "",
-                "Double-click Kurama.exe, or the Kurama shortcut on your Desktop.",
+                "Double-click s0uRc3.exe, or the s0uRc3 shortcut on your Desktop.",
                 "",
                 "It will:",
-                "  1) Place/refresh a Desktop shortcut named Kurama",
+                "  1) Place/refresh a Desktop shortcut named s0uRc3",
                 "  2) Start llama-server with the GGUF in models/",
                 "  3) Open a looping chat UI in this console",
                 "  4) Stream thoughts, then the answer",
@@ -114,11 +114,15 @@ def main() -> int:
                 "",
                 "Commands inside the UI:  /help   /models   /config   /quit",
                 "",
+                "CreatorCentral (creatorcentral/creatorcentral.py) is bundled",
+                "alongside the exe as real source — the axiom-gate CLI works",
+                "standalone too: python creatorcentral\\creatorcentral.py --help",
+                "",
                 "Requirements:",
                 "  - Visual C++ Redistributable (usually already present)",
                 "  - Python is bundled; nothing else on PATH is required",
                 "",
-                "One-shot (no GUI):  Kurama.exe --once \"list the workspace\"",
+                "One-shot (no GUI):  s0uRc3.exe --once \"list the workspace\"",
                 "",
             ]
         ),

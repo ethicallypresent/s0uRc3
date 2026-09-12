@@ -1,5 +1,11 @@
-# PyInstaller spec for the Kurama console GUI.
+# PyInstaller spec for the s0uRc3 console GUI (forked from Kurama).
 # Built by scripts/publish_portable.py — run from the agent root.
+#
+# creatorcentral/ is excluded from the frozen bundle on purpose: it locates
+# axioms.json and projects/ next to its own __file__, which only resolves to
+# a real path when the package sits on disk (as publish_portable.py copies
+# it into the portable dist folder) rather than compiled into PyInstaller's
+# zipped archive.
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -57,7 +63,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["KuramaStudio"],
+    excludes=["KuramaStudio", "creatorcentral"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -67,7 +73,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Kurama",
+    name="s0uRc3",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -87,5 +93,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Kurama",
+    name="s0uRc3",
 )
