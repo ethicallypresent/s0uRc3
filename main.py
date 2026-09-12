@@ -1,6 +1,10 @@
-"""Kurama — local self-evolving agent.
+"""s0uRc3 — local Builder Agent, forked from Kurama.
 
-Default (no args, or double-click Kurama.exe): looping terminal GUI.
+Walks software projects through the CREATE axioms (INITIATION -> REST) and,
+in time, tears them down through DECONSTRUCT. See creatorcentral/README.md
+and creatorcentral/SELF_CONSTRUCTION.md.
+
+Default (no args): looping terminal GUI.
 One-shot (scripts/CI): python main.py --once "goal"   or   python main.py "goal"
 """
 from __future__ import annotations
@@ -113,7 +117,7 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    ap = argparse.ArgumentParser(description="Kurama local agent")
+    ap = argparse.ArgumentParser(description="s0uRc3 local Builder Agent")
     ap.add_argument("goal", nargs="?", help="Goal for a one-shot run (omit to open the TUI)")
     ap.add_argument("--once", action="store_true", help="One-shot JSON run (do not open the TUI)")
     ap.add_argument("--tui", action="store_true", help="Force the looping terminal GUI")

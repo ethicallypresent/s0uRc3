@@ -1,8 +1,8 @@
-"""Tool registry — Day 5 living movers in domains.
+"""Tool registry — disk, network, process, and build (CreatorCentral) tools.
 
-Disk, network, and process creatures. Every call is forced through
-`normalize_tool_result` so the brain can only treat `observed` as light.
-Ranking uses domain fit plus earned p_success, not keyword hope alone.
+Every call is forced through `normalize_tool_result` so the brain can only
+treat `observed` as light. Ranking uses domain fit plus earned p_success,
+not keyword hope alone.
 """
 
 from __future__ import annotations
@@ -24,11 +24,22 @@ TOOL_DOMAINS = {
     "fetch_url": "network",
     "run_python": "process",
     "run_skill": "skill",
+    "init_project": "build",
+    "project_status": "build",
+    "check_axiom": "build",
+    "advance_axiom": "build",
+    "log_evidence": "build",
+    "close_project": "build",
 }
 
 _NETWORK_HINTS = ("http", "https", "web", "search", "url", "fetch", "online")
 _DISK_HINTS = ("file", "dir", "directory", "workspace", "read", "write", "list", "path", "folder")
 _PROCESS_HINTS = ("python", "code", "run", "exec", "script")
+_BUILD_HINTS = (
+    "axiom", "project", "initiation", "immutability", "naming", "ordering",
+    "adversity", "fidelity", "migration", "recovery", "protocol", "rest",
+    "advance", "gate", "evidence", "close out", "build", "creatorcentral",
+)
 
 
 class ToolRegistry:
@@ -104,6 +115,8 @@ class ToolRegistry:
             if any(h in q for h in _DISK_HINTS) and domain == "disk":
                 score += 2.0
             if any(h in q for h in _PROCESS_HINTS) and domain == "process":
+                score += 2.0
+            if any(h in q for h in _BUILD_HINTS) and domain == "build":
                 score += 2.0
             p = _belief_p(beliefs, entry["name"])
             row = {**entry, "p_success": round(p, 3)}
@@ -184,6 +197,42 @@ class ToolRegistry:
             if args.get("timeout_sec") is not None:
                 kwargs["timeout_sec"] = int(args["timeout_sec"])
             return run_python(**kwargs)
+        if name == "init_project":
+            from tools._core.creatorcentral_tools import init_project
+
+            return init_project(
+                self.paths,
+                str(args.get("name") or ""),
+                str(args.get("owner") or ""),
+                str(args.get("purpose") or ""),
+            )
+        if name == "project_status":
+            from tools._core.creatorcentral_tools import project_status
+
+            proj_name = args.get("name")
+            return project_status(self.paths, str(proj_name) if proj_name else None)
+        if name == "check_axiom":
+            from tools._core.creatorcentral_tools import check_axiom
+
+            return check_axiom(self.paths, str(args.get("name") or ""))
+        if name == "advance_axiom":
+            from tools._core.creatorcentral_tools import advance_axiom
+
+            return advance_axiom(self.paths, str(args.get("name") or ""))
+        if name == "log_evidence":
+            from tools._core.creatorcentral_tools import log_evidence
+
+            return log_evidence(
+                self.paths,
+                str(args.get("name") or ""),
+                str(args.get("requirement") or ""),
+                str(args.get("text") or ""),
+            )
+        if name == "close_project":
+            from tools._core.creatorcentral_tools import close_project
+
+            reason = args.get("reason")
+            return close_project(self.paths, str(args.get("name") or ""), str(reason) if reason else None)
         return {"ok": False, "error": f"unknown tool: {name}"}
 
 

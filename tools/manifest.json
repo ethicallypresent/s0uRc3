@@ -63,6 +63,59 @@
         "args": {"type": "object", "default": {}},
         "allow_draft": {"type": "boolean", "default": false}
       }
+    },
+    {
+      "name": "init_project",
+      "core": true,
+      "description": "Start a new CreatorCentral project at axiom 1 (INITIATION).",
+      "args": {
+        "name": {"type": "string", "required": true},
+        "owner": {"type": "string", "required": true},
+        "purpose": {"type": "string", "required": true}
+      }
+    },
+    {
+      "name": "project_status",
+      "core": true,
+      "description": "Show a CreatorCentral project's current axiom, evidence, and log; or list all projects.",
+      "args": {
+        "name": {"type": "string", "default": null}
+      }
+    },
+    {
+      "name": "check_axiom",
+      "core": true,
+      "description": "Read-only: which requirements of the project's current axiom are met vs missing.",
+      "args": {
+        "name": {"type": "string", "required": true}
+      }
+    },
+    {
+      "name": "advance_axiom",
+      "core": true,
+      "description": "Gate: move a CreatorCentral project to the next axiom, refusing if requirements are missing.",
+      "args": {
+        "name": {"type": "string", "required": true}
+      }
+    },
+    {
+      "name": "log_evidence",
+      "core": true,
+      "description": "Attach evidence text to one requirement of a CreatorCentral project's current axiom.",
+      "args": {
+        "name": {"type": "string", "required": true},
+        "requirement": {"type": "string", "required": true},
+        "text": {"type": "string", "required": true}
+      }
+    },
+    {
+      "name": "close_project",
+      "core": true,
+      "description": "Close a CreatorCentral project. Honest: records done only if it reached REST, else closed_early.",
+      "args": {
+        "name": {"type": "string", "required": true},
+        "reason": {"type": "string", "default": null}
+      }
     }
   ]
 }

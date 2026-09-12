@@ -1,0 +1,96 @@
+{
+  "version": "1.0",
+  "axioms": [
+    {
+      "id": 1,
+      "name": "INITIATION",
+      "description": "Declare the beginning. Name what is starting, why, and who owns it. Nothing starts without this.",
+      "requirements": [
+        {"key": "what", "prompt": "What is starting (one sentence)?"},
+        {"key": "why", "prompt": "Why is it starting?"},
+        {"key": "owner", "prompt": "Who owns this build?"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "IMMUTABILITY",
+      "description": "Make loss impossible. Version everything from day one; nothing vanishes without a trace.",
+      "requirements": [
+        {"key": "vcs", "prompt": "Where does the code/decision history live (repo, path)?"},
+        {"key": "first_commit", "prompt": "Evidence of a first commit or equivalent versioned artifact."}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "NAMING",
+      "description": "Name everything once, clearly. Later confusion is almost always a naming failure now.",
+      "requirements": [
+        {"key": "primary_name", "prompt": "The chosen name and who chose it."},
+        {"key": "glossary", "prompt": "A short glossary of terms this build will use consistently."}
+      ]
+    },
+    {
+      "id": 4,
+      "name": "ORDERING",
+      "description": "Structure before content. Decide what goes where and what gets built first, foundation-first.",
+      "requirements": [
+        {"key": "layout", "prompt": "The directory/module layout, foundation first."},
+        {"key": "build_order", "prompt": "The order pieces get built in, and why."}
+      ]
+    },
+    {
+      "id": 5,
+      "name": "ADVERSITY",
+      "description": "Invite the enemy early. Test plan and failure modes before they find you.",
+      "requirements": [
+        {"key": "failure_modes", "prompt": "Named failure modes."},
+        {"key": "mitigations", "prompt": "How each failure mode is caught or prevented."}
+      ]
+    },
+    {
+      "id": 6,
+      "name": "FIDELITY",
+      "description": "Stay faithful to the purpose. The build must match what INITIATION promised; no drift.",
+      "requirements": [
+        {"key": "spec_source", "prompt": "What is the source of truth for scope, and where does it live?"},
+        {"key": "drift_check", "prompt": "Evidence the current build still matches INITIATION's promise."}
+      ]
+    },
+    {
+      "id": 7,
+      "name": "MIGRATION",
+      "description": "Bring the old world in safely. Data, users, dependencies move on a plan, not on hope.",
+      "requirements": [
+        {"key": "inventory", "prompt": "What is being inherited (data, users, dependencies, prior projects)?"},
+        {"key": "migration_plan", "prompt": "The plan for carrying each inherited thing forward."}
+      ]
+    },
+    {
+      "id": 8,
+      "name": "RECOVERY",
+      "description": "Plan the undo before you need it. Backups and rollback. No launch without a way back.",
+      "requirements": [
+        {"key": "backup", "prompt": "Where backups live and how they're taken."},
+        {"key": "rollback", "prompt": "The stated rollback procedure for this build."}
+      ]
+    },
+    {
+      "id": 9,
+      "name": "PROTOCOL",
+      "description": "Write down how the pieces talk to each other, so a stranger could use this and pick it up.",
+      "requirements": [
+        {"key": "interfaces", "prompt": "How the pieces (or people) talk to each other."},
+        {"key": "handoff_doc", "prompt": "Where a stranger would go to pick this up."}
+      ]
+    },
+    {
+      "id": 10,
+      "name": "REST",
+      "description": "Define done. A project with no definition of done never rests; it just burns fuel forever.",
+      "requirements": [
+        {"key": "done_definition", "prompt": "The concrete, checkable definition of done for this build."},
+        {"key": "evidence_of_rest", "prompt": "Evidence the definition of done has actually been met."}
+      ]
+    }
+  ]
+}

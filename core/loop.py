@@ -682,12 +682,97 @@ def apply_load_preset(cfg: dict[str, Any], preset: str) -> dict[str, Any]:
     return cfg
 
 
+_DRY_RUN_PROJECT = "dry_run_demo"
+_BUILD_TOOL_NAMES = {"init_project", "check_axiom", "log_evidence", "advance_axiom"}
+_BUILD_GOAL_CUES = ("axiom", "project", "creatorcentral", "build a", "init a")
+
+
+def _dry_run_build_step(last: dict[str, Any] | None, goal: str) -> dict[str, Any] | None:
+    """One step of a scripted CreatorCentral walk: init -> check -> log -> advance -> finish."""
+    if not last:
+        return {
+            "action": "use_tool",
+            "rationale": "demonstrate CreatorCentral: start a project at INITIATION",
+            "tool": {
+                "name": "init_project",
+                "args": {"name": _DRY_RUN_PROJECT, "owner": "s0uRc3", "purpose": (goal or "dry-run demo")[:200]},
+            },
+        }
+    frm = last.get("from")
+    if frm == "init_project":
+        return {
+            "action": "use_tool",
+            "rationale": "check what INITIATION still needs",
+            "tool": {"name": "check_axiom", "args": {"name": _DRY_RUN_PROJECT}},
+        }
+    if frm == "check_axiom":
+        missing = last.get("missing") or []
+        if missing:
+            return {
+                "action": "use_tool",
+                "rationale": f"log evidence for missing requirement {missing[0]}",
+                "tool": {
+                    "name": "log_evidence",
+                    "args": {"name": _DRY_RUN_PROJECT, "requirement": missing[0], "text": f"dry-run evidence for {missing[0]}"},
+                },
+            }
+        return {
+            "action": "use_tool",
+            "rationale": "requirements met; advance the gate",
+            "tool": {"name": "advance_axiom", "args": {"name": _DRY_RUN_PROJECT}},
+        }
+    if frm == "log_evidence":
+        return {
+            "action": "use_tool",
+            "rationale": "re-check after logging evidence",
+            "tool": {"name": "check_axiom", "args": {"name": _DRY_RUN_PROJECT}},
+        }
+    if frm == "advance_axiom":
+        if not last.get("advanced"):
+            return {
+                "action": "finish",
+                "rationale": "gate refused or project already at rest; demo complete",
+                "finish": {
+                    "status": "success",
+                    "summary": f"CreatorCentral demo: gate held ({last.get('error', 'already_at_rest')}).",
+                    "artifacts": [],
+                },
+            }
+        return {
+            "action": "finish",
+            "rationale": "axiom gate advanced; demo complete",
+            "finish": {
+                "status": "success",
+                "summary": f"CreatorCentral demo: advanced past {last.get('completed', 'an axiom')}.",
+                "artifacts": [],
+            },
+            "memory_to_save": [
+                {"kind": "lesson", "text": "advance_axiom refuses to move on without logged evidence.", "verified": True}
+            ],
+        }
+    return None
+
+
 def dry_run_policy(packet: dict[str, Any]) -> str:
     """Deterministic stand-in so the scaffold is testable without a server."""
     last = packet["perception"].get("last_tool_result")
     evo = packet.get("evolution") or {}
     goal = (packet.get("user_goal") or "").lower()
     catalog = packet.get("skill_registry") or []
+
+    is_build_walk = isinstance(last, dict) and last.get("from") in _BUILD_TOOL_NAMES
+    if is_build_walk or any(c in goal for c in _BUILD_GOAL_CUES):
+        build_action = _dry_run_build_step(last if isinstance(last, dict) else None, goal)
+        if build_action is not None:
+            think = (
+                f"intent: {goal[:80]}\n"
+                f"observed: last_tool_result from={last.get('from') if isinstance(last, dict) else None}\n"
+                f"inferred: CreatorCentral demo chose {build_action['action']}\n"
+                f"speculative: none\n"
+                f"next: {build_action['action']}"
+            )
+            return f"<think>\n{think}\n</think>\n```json\n{json.dumps(build_action, indent=2)}\n```"
+
     have_normalizer = any((s.get("name") or "") == "normalize_text" for s in catalog)
     extendish = any(w in goal for w in ("extend", "skill", "normal"))
     if have_normalizer and extendish and not (last and last.get("from") == "run_skill"):
@@ -1309,7 +1394,7 @@ class AgentLoop:
                         "rationale": f"synthesized finish after unusable output ({exc})",
                         "finish": {
                             "status": "success",
-                            "summary": f"Hello — I'm Kurama. Tools: {tool_list}.",
+                            "summary": f"Hello — I'm s0uRc3, the Builder Agent. Tools: {tool_list}.",
                             "artifacts": [],
                         },
                     }
@@ -1482,7 +1567,7 @@ class AgentLoop:
                     if isinstance(t, dict) and t.get("name")
                 ]
                 tool_list = ", ".join(str(n) for n in tools[:12]) or "(see registry)"
-                summary = f"Hello — I'm Kurama. Tools: {tool_list}."
+                summary = f"Hello — I'm s0uRc3, the Builder Agent. Tools: {tool_list}."
                 log.info("Step %d: simple-chat goal satisfied after tool — finishing", step)
                 finish = self._complete_finish(
                     {"status": "success", "summary": summary},

@@ -793,7 +793,7 @@ def main(argv: list[str] | None = None) -> int:
     from core.paths import AgentPaths
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    ap = argparse.ArgumentParser(description="Kurama reflection / reward")
+    ap = argparse.ArgumentParser(description="s0uRc3 reflection / reward")
     ap.add_argument("--reward", action="store_true", help="Reinforce the last run as a good example")
     ap.add_argument("--note", default="", help="Optional note saved with the reward preference")
     ap.add_argument("--reflect-only", action="store_true", help="Analyze last trace without forcing success")
