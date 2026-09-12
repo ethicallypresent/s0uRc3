@@ -1,0 +1,47 @@
+[
+  {
+    "kind": "lesson",
+    "text": "A tool's ok field means the tool executed, not that the domain-level check it performed came back positive. check_axiom reporting missing requirements, or advance_axiom refusing a gate, are both ok:true outcomes with the real answer nested (gate_ok, advanced) \u2014 conflating them made the steering system abort a run after a perfectly correct refusal.",
+    "verified": true
+  },
+  {
+    "kind": "lesson",
+    "text": "Before adding a new tool to tool_registry.py, read an existing tool module (e.g. tools/_core/file_tools.py) for the exact signature convention: def fn(paths, *typed_args) -> dict, always returns ok, never raises to the caller.",
+    "verified": true
+  },
+  {
+    "kind": "constraint",
+    "text": "A module that locates sibling data files via Path(__file__).resolve().parent breaks under PyInstaller, because __file__ resolves inside the zipped PYZ archive, not a real directory. Exclude that package from Analysis(excludes=[...]) and ship it as loose source in the portable dist folder instead.",
+    "verified": true
+  },
+  {
+    "kind": "lesson",
+    "text": "Write the regression test immediately after fixing a bug found through manual testing, not just the fix \u2014 tests/test_creatorcentral_tools.py exists specifically because dry-running the loop surfaced the ok/gate_ok conflation that unit tests calling the CLI functions directly never would have caught.",
+    "verified": true
+  },
+  {
+    "kind": "lesson",
+    "text": "A goal string containing an unrelated trigger word (e.g. 'tool' in 'init a project for a new tool') can silently redirect the loop into an unrelated shortcut (Kurama's anti-spin 'simple chat goal' finish). When a demo policy doesn't behave as expected, check for keyword collisions in the goal text before assuming the new logic is broken.",
+    "verified": true
+  },
+  {
+    "kind": "lesson",
+    "text": "When a project's close reason should be honest, code the constraint structurally rather than trusting the caller: close_project branches on status == 'at_rest' in the data layer itself, so no caller \u2014 human or model \u2014 can mark an incomplete build 'done'.",
+    "verified": true
+  },
+  {
+    "kind": "preference",
+    "text": "s0uRc3 should be warm and plain in chat, but axiom-gated and evidence-seeking on real builds \u2014 drop the CREATE/DECONSTRUCT vocabulary entirely in casual conversation.",
+    "verified": true
+  },
+  {
+    "kind": "lesson",
+    "text": "Before rewriting an identity-bearing file (system_prompt.md, constitution.md), grep the whole repo for the old identity name first \u2014 hardcoded greeting strings in core/loop.py and argparse descriptions in main.py/reflection.py are easy to miss otherwise.",
+    "verified": true
+  },
+  {
+    "kind": "lesson",
+    "text": "Dogfood a gated tool by actually invoking its CLI end-to-end (subprocess, real files) to produce the evidence a self-construction document cites, rather than hand-writing the prose and hoping it matches what the tool would have produced.",
+    "verified": true
+  }
+]
