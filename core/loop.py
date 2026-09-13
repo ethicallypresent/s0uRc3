@@ -1492,6 +1492,7 @@ class AgentLoop:
                 human_interrupted=bool(steer_text),
             )
             step_max_tokens = self._choose_max_tokens(tier)
+            log.info("Step %d: tier=%s max_tokens=%d mode=%s", step, tier, step_max_tokens, mode)
             packet = build_user_packet(
                 goal=goal,
                 user_input=steer_text or (goal if step == 1 else ""),
