@@ -48,6 +48,7 @@ from core.plan import needs_real_plan, normalize_plan, plan_health
 from core.context import gather_context
 from core.reasoning import packet_with_reasoning
 from core.reflection import ReflectionEngine, TraceStep, save_last_trace
+from core.router import ACT, DELIBERATE, GLANCE, TIER_MAX_TOKENS_DEFAULTS, classify_turn, reasoning_budget_line
 from core.complete import complete_finish
 from core.season import archive_stale_skills
 from core.skill_manager import SkillManager
@@ -58,6 +59,26 @@ log = logging.getLogger("agent.loop")
 
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 JSON_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_NEXT_LINE_RE = re.compile(r"(?im)^\s*next\s*:\s*(.+?)\s*$")
+
+
+def reasoning_has_converged(partial_think_text: str) -> bool:
+    """Stopping rule (thinking-budgets item 4): this codebase's think-block
+    convention ends its reasoning with a `next: <action>` line (see
+    brain/system_prompt.md). If that stated conclusion repeats verbatim,
+    more tokens are re-deriving a decided answer, not changing it.
+
+    Heuristic, not a guarantee: a model that restates its conclusion in
+    slightly different words each time won't trigger this. True semantic
+    convergence detection would need embedding a second call to check, which
+    is exactly the extra-generation cost this whole pass exists to cut —
+    so this trades recall for zero added cost, on purpose.
+    """
+    matches = _NEXT_LINE_RE.findall(partial_think_text)
+    if len(matches) < 2:
+        return False
+    a, b = matches[-2].strip().lower(), matches[-1].strip().lower()
+    return bool(a) and a == b
 
 DEFAULT_ALLOWED_ACTIONS = ACTIONS
 DEFAULT_REFINE_MAX_PASSES = 3
@@ -318,6 +339,7 @@ def build_user_packet(
     named: list[dict[str, Any]] | None = None,
     steer: dict[str, Any] | None = None,
     judgment: dict[str, Any] | None = None,
+    tier: str = DELIBERATE,
 ) -> str:
     # Octopus box: multi-arm recall over SQLite + beliefs + skills + tools + evolution.
     paths = paths or AgentPaths.discover()
@@ -391,6 +413,7 @@ def build_user_packet(
         "evolution": evolution or box.get("evolution") or {},
         "named_entities": named if named is not None else (box.get("named_entities") or []),
         "steer": steer or {"steer": "continue", "reason": "no steer yet"},
+        "reasoning_budget": reasoning_budget_line(tier),
     }
     if weak_think:
         payload["perception"]["unknown"] = list(payload["perception"].get("unknown") or []) + [
@@ -409,21 +432,37 @@ def build_user_packet(
             max_packet_tokens=max_packet_tokens,
         )
     body = json.dumps(payload, separators=(",", ":"), default=str)
-    wrapped = (
-        f"Mode hint: {mode}. Reach into context "
-        f"(memory, beliefs, skills, tools) before you act. Reference what you "
-        f"pulled in <think>. Label claims observed / inferred / speculative. "
-        f"Cite named_entities, plan_health, judgment, and steer.steer. "
-        f"Treat tool.observed as fact; error is not a success. "
-        f"One plan node in_progress. Finish with observed / inferred / unknown. "
-        + (
-            "The human just interrupted mid-task with new guidance in "
-            "perception.user_input — treat it as the current priority and "
-            "emit update_plan first if it changes what you were doing. "
-            if step > 1 and user_input
-            else ""
+    human_interrupt_note = (
+        "The human just interrupted mid-task with new guidance in "
+        "perception.user_input — treat it as the current priority and "
+        "emit update_plan first if it changes what you were doing. "
+        if step > 1 and user_input
+        else ""
+    )
+    # No standing "think step by step" instruction (thinking-budgets item 1)
+    # — reasoning_budget in the packet is the only word on whether/how much
+    # to think this turn, decided by the router before this packet existed.
+    if tier == ACT:
+        turn_instruction = "reasoning_budget says act. Skip <think> entirely. Output only one json action, nothing else."
+    elif tier == GLANCE:
+        turn_instruction = (
+            f"reasoning_budget says glance. One short <think> line (~50 tokens: what, next), then act. "
+            f"Treat tool.observed as fact; error is not a success. "
+            f"{human_interrupt_note}"
+            f"Then output <think>…</think> and one json action."
         )
-        + f"Then output <think>…</think> and one json action. "
+    else:
+        turn_instruction = (
+            f"reasoning_budget says deliberate. Reach into context (memory, beliefs, skills, tools) "
+            f"before you act. Reference what you pulled in <think>. Label claims observed / inferred / "
+            f"speculative. Cite named_entities, plan_health, judgment, and steer.steer. "
+            f"Treat tool.observed as fact; error is not a success. "
+            f"One plan node in_progress. Finish with observed / inferred / unknown. "
+            f"{human_interrupt_note}"
+            f"Then output <think>…</think> and one json action."
+        )
+    wrapped = (
+        f"Mode hint: {mode}. {turn_instruction} "
         f"Do not echo this packet.\n\nPACKET:\n{body}"
     )
     return packet_with_reasoning(
@@ -558,6 +597,7 @@ def call_llm_stream(
     *,
     model: str | None = None,
     on_token: Callable[[str], None] | None = None,
+    max_tokens: int | None = None,
 ):
     """Yield text tokens from llama.cpp (OpenAI SSE). Falls back to one-shot."""
     llm = cfg.get("llm") or {}
@@ -575,6 +615,7 @@ def call_llm_stream(
             {"role": "system", "content": system},
             {"role": "user", "content": packet},
         ],
+        max_tokens=max_tokens,
     )
     payload["stream"] = True
     log.debug("LLM stream -> %s/chat/completions (model=%s)", base_url, use_model)
@@ -1007,12 +1048,36 @@ class AgentLoop:
         except OSError as exc:
             log.warning("Could not persist tool belief: %s", exc)
 
-    def _get_model_output(self, packet: str, packet_obj: dict[str, Any], dry_run: bool) -> str:
+    def _choose_max_tokens(self, tier: str) -> int:
+        """Token budget for this tier (thinking-budgets item 3).
+
+        Config keys: act_max_tokens, glance_max_tokens, deliberate_max_tokens
+        (falls back to the legacy max_tokens if unset, so existing configs
+        that only set the old flat value still get a real deliberate budget).
+        """
+        llm = self.cfg.get("llm") or {}
+        if tier == ACT:
+            return int(llm.get("act_max_tokens", TIER_MAX_TOKENS_DEFAULTS[ACT]))
+        if tier == GLANCE:
+            return int(llm.get("glance_max_tokens", TIER_MAX_TOKENS_DEFAULTS[GLANCE]))
+        return int(llm.get("deliberate_max_tokens", llm.get("max_tokens", TIER_MAX_TOKENS_DEFAULTS[DELIBERATE])))
+
+    def _get_model_output(
+        self,
+        packet: str,
+        packet_obj: dict[str, Any],
+        dry_run: bool,
+        *,
+        max_tokens: int | None = None,
+        tier: str = DELIBERATE,
+    ) -> str:
         """Get raw model text, handling dry-run/no-server fallback and retries."""
         if dry_run:
             return dry_run_policy(packet_obj)
         try:
-            return self._call_with_timeout(self.system_prompt, packet, self.cfg, model=None)
+            return self._call_with_timeout(
+                self.system_prompt, packet, self.cfg, model=None, max_tokens=max_tokens, tier=tier
+            )
         except LLMTransientError as exc:
             log.warning("LLM call failed trigger=%s detail=%s", exc.trigger, exc)
             llm = self.cfg.get("llm") or {}
@@ -1035,10 +1100,21 @@ class AgentLoop:
                 and exc.trigger in self.fallback_triggers
             ):
                 log.info("Retrying with fallback model %s after %s", fallback, exc.trigger)
-                return self._call_with_timeout(self.system_prompt, packet, self.cfg, model=fallback)
+                return self._call_with_timeout(
+                    self.system_prompt, packet, self.cfg, model=fallback, max_tokens=max_tokens, tier=tier
+                )
             raise
 
-    def _call_with_timeout(self, system: str, packet: str, cfg: dict[str, Any], *, model: str | None) -> str:
+    def _call_with_timeout(
+        self,
+        system: str,
+        packet: str,
+        cfg: dict[str, Any],
+        *,
+        model: str | None,
+        max_tokens: int | None = None,
+        tier: str = DELIBERATE,
+    ) -> str:
         # Stream tokens when a callback is set; still bound by timeout via a worker.
         timeout = int((cfg.get("llm") or {}).get("timeout_sec", DEFAULT_LLM_CFG["timeout_sec"]))
         # CPU prefill of a multi-k prompt can take minutes with no SSE bytes;
@@ -1046,11 +1122,29 @@ class AgentLoop:
         if int((cfg.get("llm") or {}).get("num_gpu") or 0) <= 0:
             timeout = max(timeout, 900)
         on_token = getattr(self, "on_token", None)
+        # Stopping rule (thinking-budgets item 4): only meaningful for a long
+        # deliberate reasoning block. act has no <think>; glance is capped so
+        # tight there's rarely room for the pattern to repeat twice anyway.
+        check_convergence = tier == DELIBERATE and bool((cfg.get("llm") or {}).get("stop_on_converged_thinking", True))
 
         def _run() -> str:
             parts: list[str] = []
-            for piece in call_llm_stream(system, packet, cfg, model=model, on_token=on_token):
+            think_closed = False
+            stream = call_llm_stream(system, packet, cfg, model=model, on_token=on_token, max_tokens=max_tokens)
+            for piece in stream:
                 parts.append(piece)
+                if not check_convergence or think_closed:
+                    continue
+                if "\n" not in piece:
+                    continue  # only re-check at line boundaries — cheap, not per-character
+                acc = "".join(parts)
+                if "</think>" in acc.lower():
+                    think_closed = True  # JSON action starts next; never cut that off
+                    continue
+                if reasoning_has_converged(acc):
+                    log.info("deliberate reasoning converged early — stopping the completion")
+                    stream.close()
+                    break
             return "".join(parts)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -1254,12 +1348,17 @@ class AgentLoop:
             "observed": dict(req) if req else {"confirmed": True},
         }, "request_confirmation"
 
-    def _check_think(self, think: str, *, dry_run: bool) -> dict[str, Any]:
+    def _check_think(self, think: str, *, dry_run: bool, tier: str = DELIBERATE) -> dict[str, Any]:
+        # act is instructed to skip <think> entirely (thinking-budgets item 1)
+        # — an empty think block there is compliance, not a quality problem,
+        # so it must not require a block or flag weak_think.
+        if tier == ACT:
+            return {"ok": True, "issues": []}
         verdict = evaluate_think(
             think,
             min_chars=int(self.cfg.get("think_block_min_chars") or 20),
             require_block=bool(self.cfg.get("require_think_block", True)),
-            require_labels=bool(self.cfg.get("think_block_must_cite_source", True)) and not dry_run,
+            require_labels=bool(self.cfg.get("think_block_must_cite_source", True)) and not dry_run and tier == DELIBERATE,
         )
         if not verdict["ok"]:
             self._weak_think = True
@@ -1309,7 +1408,6 @@ class AgentLoop:
         self.world.energy = float(effective_max_steps)
         llm_cfg = self.cfg.get("llm") or {}
         num_ctx = int(llm_cfg.get("num_ctx") or 4096)
-        max_tokens = int(llm_cfg.get("max_tokens") or 800)
 
         if not dry_run:
             warmup_model(self.cfg)
@@ -1378,24 +1476,39 @@ class AgentLoop:
             steer_text = self._take_pending_steer()
             if steer_text:
                 self._observe(step=step, source="human_interrupt", content=steer_text, ok=True)
+            tool_candidates = self.tools.list_filtered(
+                goal, k=self.cfg.get("tool_topk", 8), beliefs=self._belief_map()
+            )
+            mode = goal_mode(goal)
+            tier = classify_turn(
+                goal=goal,
+                mode=mode,
+                step=step,
+                last_result=self.memory.wm.last_result,
+                tool_candidates=tool_candidates,
+                should_create_skill=should,
+                steer=(self.steering.last or {}).get("steer", "continue"),
+                weak_think=self._weak_think,
+                human_interrupted=bool(steer_text),
+            )
+            step_max_tokens = self._choose_max_tokens(tier)
             packet = build_user_packet(
                 goal=goal,
                 user_input=steer_text or (goal if step == 1 else ""),
                 memory=self.memory,
-                tools=self.tools.list_filtered(
-                    goal, k=self.cfg.get("tool_topk", 8), beliefs=self._belief_map()
-                ),
+                tools=tool_candidates,
                 skills=catalog,
                 memory_topk=int(self.cfg.get("memory_topk", 8)),
                 world=self.world,
                 system=self.system_prompt,
                 num_ctx=num_ctx,
-                max_tokens=max_tokens,
+                max_tokens=step_max_tokens,
                 max_packet_tokens=1200 if int((self.cfg.get("llm") or {}).get("num_gpu") or 0) <= 0 else None,
                 weak_think=self._weak_think,
                 named=self.world_model.recall(goal, k=8),
                 steer=self.steering.last,
                 judgment=self._last_judgment,
+                tier=tier,
                 evolution={
                     "should_create": should,
                     "reason": reason,
@@ -1414,9 +1527,9 @@ class AgentLoop:
             packet_obj = json.loads(json_blob)
 
             try:
-                raw = self._get_model_output(packet, packet_obj, dry_run)
+                raw = self._get_model_output(packet, packet_obj, dry_run, max_tokens=step_max_tokens, tier=tier)
                 think, action = self._parse_with_retry(raw, packet, packet_obj, dry_run)
-                self._check_think(think, dry_run=dry_run)
+                self._check_think(think, dry_run=dry_run, tier=tier)
             except (LLMTransientError, ValueError, json.JSONDecodeError) as exc:
                 log.warning("Step %d: model output unusable (%s) — synthesizing loop action", step, exc)
                 think = ""

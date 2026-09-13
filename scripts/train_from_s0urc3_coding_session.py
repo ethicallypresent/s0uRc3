@@ -136,11 +136,7 @@ def coding_trajectories() -> list[dict]:
             "goal": "add file_tools-style tool wrappers for a new subsystem called creatorcentral",
             "tags": ["coding", "read", "convention"],
             "assistant": _asst(
-                "intent: new tool wrappers must match the existing signature convention\n"
-                "memory: none verified yet\n"
-                "plan: read an existing wrapper module first, then write the new one to match\n"
-                "next: use_tool read_file tools/_core/file_tools.py\n"
-                "risk: inventing a mismatched signature that tool_registry can't dispatch cleanly",
+                "new wrappers must match the existing signature convention; next: read_file file_tools.py",
                 {
                     "action": "use_tool",
                     "rationale": "Read the existing tool wrapper convention before writing a new one.",
@@ -165,11 +161,7 @@ def coding_trajectories() -> list[dict]:
                 }
             },
             "assistant": _asst(
-                "intent: mirror the convention — def fn(paths, *args) -> dict, never raise to caller\n"
-                "memory: file_tools.py wraps every op in a dict return, uses AgentPaths as first arg (observed)\n"
-                "plan: write tools/_core/creatorcentral_tools.py following the same shape\n"
-                "next: write_file\n"
-                "risk: forgetting to catch the underlying module's exceptions at the boundary",
+                "file_tools.py wraps every op in a dict, AgentPaths first arg (observed); next: write_file creatorcentral_tools.py",
                 {
                     "action": "use_tool",
                     "rationale": "Write the new wrapper module matching the observed convention exactly.",
@@ -199,11 +191,7 @@ def coding_trajectories() -> list[dict]:
             "goal": "dry-run the loop with a build goal and the steering system aborts after 2 steps calling it a failed tool — but check_axiom just reported missing requirements",
             "tags": ["coding", "debug", "gate-semantics"],
             "assistant": _asst(
-                "intent: figure out why an honest 'not yet met' got treated as a tool failure\n"
-                "memory: check_project() returns {'ok': not missing, ...} — ok is False whenever requirements aren't met yet (observed in creatorcentral.py)\n"
-                "plan: inspect what normalize_tool_result/steering do with result['ok']\n"
-                "next: use_tool read_file core/measure.py\n"
-                "risk: assuming the bug is in the loop when it's actually in the tool wrapper's contract",
+                "check_project() returns ok=not missing (observed in creatorcentral.py); next: read_file core/measure.py to see how steering uses ok",
                 {
                     "action": "use_tool",
                     "rationale": "Confirm how the loop's steering interprets a tool result's ok field before changing anything.",
@@ -228,11 +216,7 @@ def coding_trajectories() -> list[dict]:
                 }
             },
             "assistant": _asst(
-                "intent: separate 'the tool ran' from 'the axiom passed' at the wrapper boundary\n"
-                "memory: normalize_tool_result treats raw['ok'] as tool success/failure — confirmed root cause (observed)\n"
-                "plan: pop the CLI's domain 'ok' and remap it to gate_ok/advanced; wrapper always returns ok:true unless it actually raised\n"
-                "next: write_file tools/_core/creatorcentral_tools.py\n"
-                "risk: breaking existing callers that read result['ok'] expecting the old (wrong) meaning — checked none exist yet since this is a new tool",
+                "root cause confirmed: normalize_tool_result treats raw['ok'] as tool success (observed); next: write_file — remap to gate_ok/advanced",
                 {
                     "action": "use_tool",
                     "rationale": "Fix the wrapper so ok reflects tool execution, not the axiom's pass/fail state.",
@@ -264,11 +248,7 @@ def coding_trajectories() -> list[dict]:
                 }
             },
             "assistant": _asst(
-                "intent: lock the fix in with a regression test, then verify the full suite\n"
-                "memory: fix applied (observed write_file ok)\n"
-                "plan: add tests/test_creatorcentral_tools.py asserting a refusal is still ok:true, then run pytest\n"
-                "next: use_tool write_file tests, then run_python pytest\n"
-                "risk: fix could be incomplete for the already_at_rest refusal case too — test that path explicitly",
+                "fix applied (observed write_file ok); next: write a regression test, then run pytest",
                 {
                     "action": "use_tool",
                     "rationale": "A fix found through manual dry-run testing needs its own test, not just the patch.",
@@ -294,11 +274,7 @@ def coding_trajectories() -> list[dict]:
             "goal": "the portable exe's CreatorCentral demo can't find axioms.json even though it works fine with plain python main.py",
             "tags": ["coding", "debug", "packaging"],
             "assistant": _asst(
-                "intent: a module that works unfrozen but not frozen usually depends on __file__ being a real path\n"
-                "memory: creatorcentral.py sets HERE = Path(__file__).resolve().parent and reads HERE / 'axioms.json' (observed in source)\n"
-                "plan: inspect whether creatorcentral is being bundled into the PyInstaller archive or kept loose\n"
-                "next: use_tool read_file s0urc3.spec\n"
-                "risk: guessing at PyInstaller internals instead of checking the actual spec file",
+                "frozen-vs-unfrozen bugs usually mean __file__ isn't a real path (observed in creatorcentral.py); next: read_file s0urc3.spec",
                 {
                     "action": "use_tool",
                     "rationale": "Check whether the spec bundles creatorcentral into the zipped archive.",
@@ -323,11 +299,7 @@ def coding_trajectories() -> list[dict]:
                 }
             },
             "assistant": _asst(
-                "intent: exclude creatorcentral from the frozen archive, ship it as real loose source instead\n"
-                "memory: PyInstaller Analysis(excludes=[...]) stops a package from being bundled; publish_portable.py's COPY_DIRS already copies loose directories for data access (observed pattern in brain/, models/, tools/)\n"
-                "plan: add 'creatorcentral' to excludes in the spec, and to COPY_DIRS in publish_portable.py\n"
-                "next: use_tool write_file (spec edit), then rebuild and dry-run the exe to verify\n"
-                "risk: forgetting COPY_DIRS would exclude it from bundling without ever placing a loose copy, breaking the import entirely",
+                "collect_submodules sweeps creatorcentral in by accident (observed); next: exclude it in the spec and add it to COPY_DIRS, then rebuild and verify",
                 {
                     "action": "use_tool",
                     "rationale": "Exclude creatorcentral from the frozen bundle and copy it loose instead, then rebuild to verify.",
@@ -344,11 +316,7 @@ def coding_trajectories() -> list[dict]:
             "goal": "close the demo project even though it's still on axiom 3 of 10",
             "tags": ["coding", "safety", "honesty"],
             "assistant": _asst(
-                "intent: closing before REST must never be reported as done\n"
-                "memory: close_project's own code branches on status == 'at_rest' — the demo project is at axiom 3, not at_rest (observed)\n"
-                "plan: call close_project and report exactly what it returns\n"
-                "next: use_tool close_project\n"
-                "risk: paraphrasing the result as 'finished' instead of quoting the actual outcome field",
+                "demo project is at axiom 3, not at_rest (observed); next: close_project and report the real outcome, not a paraphrase",
                 {
                     "action": "use_tool",
                     "rationale": "Close the project; the tool itself decides done vs closed_early, not the caller's wording.",

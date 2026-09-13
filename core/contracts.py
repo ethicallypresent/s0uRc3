@@ -42,6 +42,13 @@ KNOWN_LLM_DEFAULTS = MappingProxyType(
         "api_key": "sk-no-key-needed",
         "temperature": 0.2,
         "max_tokens": 800,
+        # Thinking-budget tiers (core/router.py): chosen by classify_turn()
+        # before the request is sent, not one flat cap for everything.
+        # "max_tokens" above stays as deliberate's fallback for configs that
+        # only ever set the old single value.
+        "act_max_tokens": 120,
+        "glance_max_tokens": 250,
+        "deliberate_max_tokens": 800,
         "timeout_sec": 300,
         "dry_run_on_no_server": True,
         "warmup": True,
