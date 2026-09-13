@@ -234,7 +234,11 @@ def parse_model_output(text: str) -> tuple[str, dict[str, Any]]:
     think = ""
     m = THINK_RE.search(text or "")
     if m:
-        think = m.group(1).strip()
+        # brain/system_prompt.md's "thinking" rule: lowercase only inside
+        # <think>. This is the backstop, not the mechanism — the prompt is
+        # the mechanism. Applies only to the reasoning trace; the JSON
+        # action (parsed below, including finish.summary) is untouched.
+        think = m.group(1).strip().lower()
     jm = JSON_RE.search(text or "")
     raw = jm.group(1) if jm else None
     if raw is None:

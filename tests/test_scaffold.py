@@ -22,6 +22,19 @@ def test_parse_action():
     assert action["action"] == "finish"
 
 
+def test_think_block_is_lowercased_but_finish_summary_is_not():
+    """brain/system_prompt.md's "thinking" rule applies only to the
+    reasoning trace, never to user-facing text — the code-level backstop
+    must match that scope exactly, not lowercase everything."""
+    raw = """<think>Intent: Do The Thing. Risk: NONE.</think>
+```json
+{"action": "finish", "finish": {"status": "success", "summary": "Done. The Thing Worked."}}
+```"""
+    think, action = parse_model_output(raw)
+    assert think == "intent: do the thing. risk: none."
+    assert action["finish"]["summary"] == "Done. The Thing Worked."
+
+
 def test_path_guard_blocks_core():
     paths = AgentPaths.discover()
     guard = PathGuard(paths)
