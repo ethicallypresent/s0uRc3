@@ -60,7 +60,8 @@ Commands
   /clear             wipe chat history on this machine
   /quit              exit
 
-Esc stops the current run. y/n/a answers a permission prompt.
+Esc stops the current run. Ctrl+C steers it — send new guidance without
+ending it. y/n/a answers a permission prompt.
 """
 
 
@@ -172,7 +173,10 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
         #perm-buttons { height: auto; padding-top: 1; }
         #perm-buttons Button { margin-right: 1; }
         """
-        BINDINGS = [Binding("escape", "cancel_run", "Stop")]
+        BINDINGS = [
+            Binding("escape", "cancel_run", "Stop"),
+            Binding("ctrl+c", "steer", "Steer"),
+        ]
 
         def __init__(
             self,
@@ -196,6 +200,7 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
             self._tok_lock = threading.Lock()
             self._pending_tokens: list[str] = []
             self._streaming = False
+            self._steering = False
 
         def compose(self) -> ComposeResult:
             yield Static("Starting…", id="status")
@@ -350,6 +355,9 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
         def on_input_submitted(self, event: Input.Submitted) -> None:
             text = (event.value or "").strip()
             event.input.value = ""
+            if self._steering:
+                self._submit_steer(text)
+                return
             if not text:
                 return
             if text.startswith("/"):
@@ -359,6 +367,33 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
                 self.set_status("Already running — Esc to stop")
                 return
             self._start_turn(text)
+
+        def action_steer(self) -> None:
+            """Ctrl+C: interrupt the running task with new guidance, without
+            ending it — the loop keeps its plan/scratchpad/memory and picks
+            the redirect up as perception.user_input at the next step
+            boundary (see AgentLoop.queue_steer). No-op when idle: there's
+            nothing running to steer, and Ctrl+C shouldn't quit the app."""
+            if not self._busy or self.loop is None:
+                return
+            self._steering = True
+            self._prompt.disabled = False
+            self._prompt.placeholder = "Steer: new guidance, Enter to send (task keeps running)"
+            self._prompt.focus()
+            self.set_status("Steering — type guidance and press Enter")
+
+        def _submit_steer(self, text: str) -> None:
+            self._steering = False
+            self._prompt.placeholder = "Ask s0uRc3  ·  /help for commands"
+            if text and self.loop is not None:
+                queued = self.loop.queue_steer(text)
+                self._chat.write(f"[dim]-> steering: {queued}[/]")
+                self.set_status("Steer queued — takes effect next step")
+            else:
+                self.set_status("Dry-run…" if self.dry_run else "Thinking…")
+            # The original run is still in progress — keep the prompt locked
+            # until it actually finishes, same as during any other turn.
+            self._prompt.disabled = self._busy
 
         def _start_turn(self, goal: str) -> None:
             self._busy = True
@@ -479,6 +514,9 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
         # -- cancel ---------------------------------------------------------
 
         def action_cancel_run(self) -> None:
+            if self._steering:
+                self._steering = False
+                self._prompt.placeholder = "Ask s0uRc3  ·  /help for commands"
             if self.loop is not None:
                 self.loop.cancel_requested = True
             if self._perm_done is not None:

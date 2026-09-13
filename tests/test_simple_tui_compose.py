@@ -86,3 +86,51 @@ async def test_drain_with_nothing_pending_is_a_cheap_noop():
         live = app.query_one("#live")
         app._drain_tokens()  # nothing buffered
         assert str(live.render()) == ""
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_is_a_noop_when_idle():
+    """Nothing is running, so Ctrl+C must not open a steering prompt (and
+    must not fall through to whatever Textual would otherwise do with it)."""
+    from tui.simple_app import build_simple_app
+
+    app = build_simple_app(dry_run=True)
+    async with app.run_test() as pilot:
+        assert app._busy is False
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._steering is False
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_while_busy_opens_steering_and_queues_on_submit():
+    """End-to-end against the real AgentLoop.queue_steer, not a fake — the
+    app's own dry-run bootstrap worker constructs a real AgentLoop shortly
+    after mount regardless of dry_run (dry_run only affects loop.run() at
+    call time), so a test that swaps in a fake loop right after mount can
+    lose a race against that worker overwriting app.loop. Waiting for
+    bootstrap first avoids that race and exercises the real integration."""
+    from tui.simple_app import build_simple_app
+
+    app = build_simple_app(dry_run=True)
+    async with app.run_test() as pilot:
+        for _ in range(50):
+            if app.loop is not None:
+                break
+            await pilot.pause()
+        assert app.loop is not None, "bootstrap never completed"
+        app._busy = True
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert app._steering is True
+        assert app._prompt.disabled is False
+
+        for ch in "go check the other file":
+            await pilot.press(ch if ch != " " else "space")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.loop._take_pending_steer() == "go check the other file"
+        assert app._steering is False
+        assert app._prompt.disabled is True  # run is still busy, so locked again

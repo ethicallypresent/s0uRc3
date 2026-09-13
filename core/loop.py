@@ -26,6 +26,7 @@ import concurrent.futures
 import json
 import logging
 import re
+import threading
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Literal
@@ -411,7 +412,14 @@ def build_user_packet(
         f"Cite named_entities, plan_health, judgment, and steer.steer. "
         f"Treat tool.observed as fact; error is not a success. "
         f"One plan node in_progress. Finish with observed / inferred / unknown. "
-        f"Then output <think>…</think> and one json action. "
+        + (
+            "The human just interrupted mid-task with new guidance in "
+            "perception.user_input — treat it as the current priority and "
+            "emit update_plan first if it changes what you were doing. "
+            if step > 1 and user_input
+            else ""
+        )
+        + f"Then output <think>…</think> and one json action. "
         f"Do not echo this packet.\n\nPACKET:\n{body}"
     )
     return packet_with_reasoning(
@@ -929,12 +937,36 @@ class AgentLoop:
         self._run_allowed: set[str] = set()
         self.cancel_requested = False
         self._dry_run = False
+        # Ctrl+C interrupt/steer: a human course-correction queued from the
+        # UI thread while run() executes on a worker thread. Consumed once,
+        # at the next step boundary, as that step's perception.user_input —
+        # the run keeps its plan/scratchpad/memory, it just gets redirected,
+        # unlike cancel_requested which ends the run outright.
+        self._steer_lock = threading.Lock()
+        self._pending_steer: str = ""
         if "refine_max_passes" not in self.cfg:
             self.cfg["refine_max_passes"] = DEFAULT_REFINE_MAX_PASSES
 
     def close(self) -> None:
         self.memory.close()
         self.world_model.close()
+
+    def queue_steer(self, text: str) -> str:
+        """Thread-safe: queue a mid-run human interrupt for the next step.
+
+        Returns the text actually queued (stripped), empty if there was
+        nothing to queue — callers can use that to confirm/report back.
+        """
+        text = (text or "").strip()
+        if text:
+            with self._steer_lock:
+                self._pending_steer = text
+        return text
+
+    def _take_pending_steer(self) -> str:
+        with self._steer_lock:
+            text, self._pending_steer = self._pending_steer, ""
+        return text
 
     def _run_skill_tracked(self, name: str, args: dict | None = None, allow_draft: bool = False) -> dict:
         out = self.skills.run(name, args, allow_draft=allow_draft)
@@ -1339,9 +1371,12 @@ class AgentLoop:
             )
             if should:
                 self.evolution.record_gap(goal, reason)
+            steer_text = self._take_pending_steer()
+            if steer_text:
+                self._observe(step=step, source="human_interrupt", content=steer_text, ok=True)
             packet = build_user_packet(
                 goal=goal,
-                user_input=goal if step == 1 else "",
+                user_input=steer_text or (goal if step == 1 else ""),
                 memory=self.memory,
                 tools=self.tools.list_filtered(
                     goal, k=self.cfg.get("tool_topk", 8), beliefs=self._belief_map()
