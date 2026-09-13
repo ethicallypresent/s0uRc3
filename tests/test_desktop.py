@@ -35,3 +35,18 @@ def test_shortcut_script_quotes_apostrophes(tmp_path: Path):
         working_directory=target.parent,
     )
     assert "O''Brien" in script
+
+
+def test_shortcut_script_always_sets_arguments_even_when_empty(tmp_path: Path):
+    """A stale Arguments string from an earlier install_desktop_shortcut()
+    call (e.g. a dev-mode shortcut pointing at "path/to/main.py") must be
+    cleared when the shortcut is later refreshed to take no arguments —
+    CreateShortcut loads the existing .lnk's properties, so skipping this
+    line for a falsy value would leave the old value in place forever."""
+    script = shortcut_script(
+        link_path=tmp_path / SHORTCUT_NAME,
+        target=tmp_path / "s0uRc3.exe",
+        working_directory=tmp_path,
+        arguments="",
+    )
+    assert "$sc.Arguments = ''" in script

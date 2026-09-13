@@ -78,9 +78,14 @@ def shortcut_script(
         f"$sc.WorkingDirectory = {_ps_quote(str(working_directory))}",
         f"$sc.WindowStyle = 1",
         f"$sc.Description = {_ps_quote(description)}",
+        # Always set, even to "" — CreateShortcut loads the existing .lnk's
+        # properties when the file already exists, so skipping this line for
+        # a falsy value leaves a stale Arguments string from a previous
+        # install_desktop_shortcut() call in place instead of clearing it
+        # (e.g. a dev-mode shortcut's "path/to/main.py" surviving after the
+        # target is later repointed at a frozen exe that takes no arguments).
+        f"$sc.Arguments = {_ps_quote(arguments)}",
     ]
-    if arguments:
-        lines.append(f"$sc.Arguments = {_ps_quote(arguments)}")
     if icon:
         lines.append(f"$sc.IconLocation = {_ps_quote(icon + ',0')}")
     lines.append("$sc.Save()")
