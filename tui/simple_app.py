@@ -20,9 +20,12 @@ by token and only looking at the last result. Nothing about the
 think/answer/JSON-fence parsing changes; only how often the UI looks at
 it does.
 
-Deliberately smaller in scope than tui/app.py: no in-app model picker or
-config screens. Pick the model with `--model` (main.py) or the config
-default; switch later with `/model <spec>`.
+Deliberately smaller in scope than tui/app.py: no modal picker/config
+*screens*. `/models` lists what's available (llama-server ids + GGUFs on
+disk) straight into the chat log, and `/model <number-or-spec>` switches —
+same information as the classic TUI's picker, just not a separate Screen.
+There is still no `/config` (resource/agent-setting sliders) — say if you
+need that ported too.
 """
 
 from __future__ import annotations
@@ -50,7 +53,8 @@ REDRAW_HZ = 20  # throttle: one redraw per tick, no matter how many tokens arriv
 HELP_TEXT = """\
 Commands
   /help              this list
-  /model [spec]      switch model (GGUF path or server id); no arg reloads default
+  /models            list available llama-server ids and GGUFs on disk
+  /model [n|spec]    switch model by list number, GGUF path, or server id; no arg reloads default
   /dry-run           toggle deterministic policy (no LLM)
   /reward            reinforce the last run
   /clear             wipe chat history on this machine
@@ -255,17 +259,35 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
                 log.exception("bootstrap failed")
                 self.call_from_thread(self.set_status, f"Startup error: {exc}")
 
+        def _list_models(self) -> None:
+            from core.model import catalog
+
+            items = catalog(self.paths.root, read_config(self.paths))
+            if not items:
+                self._chat.write("No models found. Use /model <path-or-id> with a GGUF path or server model id.")
+                return
+            lines = ["Available models — /model <number-or-spec> to switch:"]
+            lines += [f"  {i}) {item.label}" for i, item in enumerate(items, 1)]
+            self._chat.write("\n".join(lines))
+
         def _load_model(self, spec: str | None) -> None:
-            from core.model import apply_choice
+            from core.model import apply_choice, catalog
 
             try:
                 if spec:
-                    choice = choice_from_spec(spec, self.paths.root, read_config(self.paths))
+                    cfg = read_config(self.paths)
+                    choice = None
+                    if spec.isdigit():
+                        items = catalog(self.paths.root, cfg)
+                        idx = int(spec) - 1
+                        if 0 <= idx < len(items):
+                            choice = items[idx]
                     if choice is None:
-                        self.call_from_thread(self.set_status, f"No model matched {spec!r} — /model to retry")
+                        choice = choice_from_spec(spec, self.paths.root, cfg)
+                    if choice is None:
+                        self.call_from_thread(self.set_status, f"No model matched {spec!r} — /models to list")
                         self._bootstrap()
                         return
-                    cfg = read_config(self.paths)
                     boot = apply_choice(self.paths, choice, cfg)
                     if not boot.get("ok"):
                         self.call_from_thread(self.set_status, f"Model load failed: {boot.get('error')}")
@@ -429,9 +451,14 @@ def build_simple_app(*, dry_run: bool = False, max_steps: int | None = None, mod
             elif cmd == "/dry-run":
                 self.dry_run = not self.dry_run
                 self.set_status("Dry-run ON" if self.dry_run else "Dry-run OFF")
+            elif cmd == "/models":
+                self._list_models()
             elif cmd == "/model":
-                self.set_status(f"Loading {arg}…" if arg else "Reloading default model…")
-                self.run_worker(lambda: self._load_model(arg or None), thread=True, exclusive=True, group="boot")
+                if not arg:
+                    self._list_models()
+                else:
+                    self.set_status(f"Loading {arg}…")
+                    self.run_worker(lambda: self._load_model(arg), thread=True, exclusive=True, group="boot")
             elif cmd == "/reward":
                 self._reward()
             else:
