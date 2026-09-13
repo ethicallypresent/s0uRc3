@@ -113,10 +113,6 @@ def prepare_runtime_paths() -> None:
 
 def main() -> int:
     prepare_runtime_paths()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
     ap = argparse.ArgumentParser(description="s0uRc3 local Builder Agent")
     ap.add_argument("goal", nargs="?", help="Goal for a one-shot run (omit to open the TUI)")
     ap.add_argument("--once", action="store_true", help="One-shot JSON run (do not open the TUI)")
@@ -139,6 +135,21 @@ def main() -> int:
 
     use_tui = args.tui or (not args.once and not args.goal)
     if use_tui:
+        # Textual owns the terminal once app.run() starts. Background-thread
+        # logging (llama-server startup, memory, resource allocation, ...)
+        # writing straight to stderr lands in the same screen buffer Textual
+        # is drawing into and corrupts it into plain scrolling log lines
+        # instead of the rendered UI — exactly what "a terminal comes up
+        # with no flashy stuff" looks like. Route it to a file instead.
+        from core.paths import AgentPaths
+
+        log_dir = AgentPaths.discover().db
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            filename=str(log_dir / "tui.log"),
+        )
         _enable_windows_vt()
         if getattr(sys, "frozen", False):
             from core.desktop import install_desktop_shortcut
@@ -152,6 +163,10 @@ def main() -> int:
 
         return run_simple_app(dry_run=args.dry_run, max_steps=args.max_steps, model=args.model)
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     goal = (args.goal or input("goal> ")).strip()
     if not goal:
         print("no goal given", file=sys.stderr)

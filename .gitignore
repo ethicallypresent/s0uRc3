@@ -22,6 +22,7 @@ tools/bin/*.exe
 db/*.sqlite
 db/*.json
 db/*.bak
+db/*.log
 brain/reasoning_config.json.bak
 
 # Logs and scratch output
