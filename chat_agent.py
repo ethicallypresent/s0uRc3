@@ -61,6 +61,15 @@ def _chat_once(
 
 
 _CHAT_RELEVANT_KINDS = {"fact", "preference"}
+_WORD_RE = re.compile(r"[a-z0-9]{3,}")
+
+
+def _keyword_overlap(query: str, content: str) -> float:
+    q_words = set(_WORD_RE.findall(query.lower()))
+    if not q_words:
+        return 0.0
+    c_words = set(_WORD_RE.findall(content.lower()))
+    return len(q_words & c_words) / len(q_words)
 
 
 def _recall_block(memory: Memory, query: str) -> str:
@@ -74,18 +83,35 @@ def _recall_block(memory: Memory, query: str) -> str:
     weak model asked a plain question and handed an off-topic tool lesson
     in its context will garble the two together (confirmed: it worked a
     tool-parallel entry into an answer about the Book of John and invented
-    a false claim from the collision). Offline hash embeddings (no real
-    embedding server here) are lexically crude, not semantic, so retrieve()
-    alone under-discriminates between "about John" and "mentions a verse
-    number" — filtering by kind is the cheap, reliable backstop.
+    a false claim from the collision).
+
+    Also re-ranked with a keyword-overlap bonus on top of the embedding
+    score. Confirmed empirically that even real server embeddings from a
+    1.2B causal model (mean-pooled, not a model trained for embeddings)
+    barely discriminate topics — cosine scores for "what do you know about
+    the book of john" clustered in a narrow 0.74-0.80 band with no clear
+    separation, and an unrelated "my favorite color is teal" outscored the
+    actual John content. An exact word match like "john" is a far stronger
+    signal here than this embedding space provides alone — same idea as
+    core/tool_registry.py's own keyword-plus-score ranking.
     """
     try:
-        hits = memory.retrieve(query, k=RECALL_K * 2)
+        # A large k, not RECALL_K*4: retrieve() already scores every row by
+        # cosine similarity internally regardless of k (k only truncates the
+        # returned list), so this costs nothing extra — but a small k was
+        # cutting the pool down to embedding-score order *before* the
+        # keyword re-rank below ever got a chance to run, silently dropping
+        # exactly the entries keyword overlap was meant to rescue.
+        hits = memory.retrieve(query, k=200)
     except Exception:  # noqa: BLE001 — recall is a nice-to-have, never fatal
         return ""
-    hits = [h for h in hits if h.get("kind") in _CHAT_RELEVANT_KINDS][:RECALL_K]
+    hits = [h for h in hits if h.get("kind") in _CHAT_RELEVANT_KINDS]
     if not hits:
         return ""
+    for h in hits:
+        h["_rank"] = float(h.get("score") or 0.0) + _keyword_overlap(query, h.get("content") or "")
+    hits.sort(key=lambda h: h["_rank"], reverse=True)
+    hits = hits[:RECALL_K]
     lines = [f"- {h.get('content')}" for h in hits]
     return (
         "Facts from memory relevant to the user's message. If they answer the "
