@@ -576,7 +576,7 @@ def build_user_packet(
         )
     wrapped = (
         f"Mode hint: {mode}. {turn_instruction} "
-        f"Do not echo this packet.\n\nPACKET:\n{body}"
+        f"Never write the packet below into your output — reply only with your own new think block and json action.\n\nPACKET:\n{body}"
     )
     return packet_with_reasoning(
         wrapped,
