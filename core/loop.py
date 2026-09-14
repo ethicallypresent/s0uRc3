@@ -1709,6 +1709,18 @@ class AgentLoop:
                 path_hint_val = str(perception.get("path_hint") or "").strip()
                 content_hint_val = str(perception.get("content_hint") or "").strip()
                 tool_name = str(tool.get("name") or "") if isinstance(tool, dict) else ""
+                if isinstance(tool, dict) and tool_name == "read_file" and content_hint_val:
+                    # content_hint only ever exists when the goal has a quoted
+                    # literal that isn't a path — that can only mean "write
+                    # this". Confirmed empirically: even with a clean belief
+                    # store and a worked write_file example in the prompt,
+                    # the model still defaults to read_file for a write goal
+                    # (primacy bias toward whichever example it saw first) —
+                    # correcting the verb itself is more reliable than trying
+                    # to out-word that bias.
+                    log.info("Step %d: overriding tool name read_file -> write_file (content_hint present)", step)
+                    tool_name = "write_file"
+                    action["tool"]["name"] = tool_name
                 if isinstance(tool, dict) and tool_name in ("read_file", "write_file"):
                     args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
                     new_args = dict(args)
