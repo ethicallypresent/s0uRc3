@@ -134,6 +134,20 @@ def build_server_args(
         # looks like the server "won't connect". Keep thoughts inline.
         "--reasoning-format",
         "none",
+        # core/memory.py tries /v1/embeddings first and falls back to a
+        # crude offline hash embedding when it 404s/501s — llama-server
+        # only exposes that endpoint with this flag. Confirmed a plain
+        # causal model like pocket.gguf can still serve pooled-hidden-state
+        # embeddings alongside normal chat completions from the same
+        # server; this doesn't disable or compete with completions.
+        "--embeddings",
+        # pocket.gguf's default pooling is "none" (per-token hidden states),
+        # which /v1/embeddings rejects outright ("not OAI compatible") since
+        # that endpoint needs one vector per input. "mean" pools token
+        # states into a single vector — the standard choice for a causal
+        # model with no dedicated embedding head.
+        "--pooling",
+        "mean",
     ]
     if jinja:
         args.append("--jinja")

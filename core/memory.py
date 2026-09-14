@@ -83,11 +83,19 @@ def _post_embedding(url: str, payload: dict, timeout: int) -> list[float] | None
         return None
 
 
-def server_embedding(text: str, timeout: int = 2) -> list[float] | None:
+def server_embedding(text: str, timeout: int = 20) -> list[float] | None:
     """Real semantic embedding from a local server. None if unreachable.
 
     Tries the OpenAI-compatible /v1/embeddings first, then Ollama's native
     /api/embeddings (older Ollama versions 404 the v1 path).
+
+    timeout was 2s, which looked like a deliberate fast-fail for "no local
+    server at all" — but confirmed empirically it also fails a real,
+    reachable CPU-only llama-server under normal load (a handful of
+    embedding calls in a row would intermittently time out and silently
+    fall back to hash embeddings). A dead/refused connection still fails in
+    milliseconds regardless of this value, so raising it only helps the
+    case that actually needs it.
     """
     base = _embed_url()
     if not base:
