@@ -105,6 +105,28 @@ def _extract_content_hint(text: str) -> str | None:
     return None
 
 
+def _rest_summary(tool_name: str, result: dict[str, Any] | None) -> str:
+    """Plain-language wrap-up for the redundant-tool-call safety net.
+
+    When the loop cuts off a model repeating the same successful tool call,
+    the model never wrote its own finish.summary — build one from the tool
+    result's actual fields instead of dumping its raw key=value form (which
+    read as e.g. "path=x; content={...}; truncated=False; bytes=129" rather
+    than telling the user what the file actually said).
+    """
+    r = result if isinstance(result, dict) else {}
+    if tool_name == "read_file" and r.get("content") is not None:
+        path = r.get("path") or "the file"
+        content = str(r.get("content") or "").strip()
+        return f"{path}: {content}" if content else f"{path} is empty."
+    if tool_name == "write_file" and r.get("path"):
+        return f"Wrote {r.get('bytes', '?')} bytes to {r.get('path')}."
+    if tool_name == "list_dir" and isinstance(r.get("entries"), list):
+        names = [e.get("path") for e in r["entries"] if isinstance(e, dict) and e.get("path")]
+        return f"{len(names)} entries: {', '.join(names[:20])}" if names else "empty directory."
+    return observed_text(r)
+
+
 def reasoning_has_converged(partial_think_text: str) -> bool:
     """Stopping rule (thinking-budgets item 4): this codebase's think-block
     convention ends its reasoning with a `next: <action>` line (see
@@ -1841,7 +1863,7 @@ class AgentLoop:
                 finish = self._complete_finish(
                     {
                         "status": "success",
-                        "summary": observed_text(result if isinstance(result, dict) else None)
+                        "summary": _rest_summary(str(steer.get("tool") or ""), result)
                         or str(steer.get("reason") or "resting"),
                     },
                     goal=goal,

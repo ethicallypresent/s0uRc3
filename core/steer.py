@@ -37,10 +37,14 @@ def evaluate_steer(
 
     tool_names = [
         (s.tool_name or "")
-        for s in trace[-3:]
+        for s in trace[-2:]
         if s.action == "use_tool" and (s.tool_name or "")
     ]
-    repeating = len(tool_names) >= 3 and len(set(tool_names)) == 1
+    # 2 in a row, not 3: a small local model re-issuing the very same
+    # successful tool call is never useful information, only wasted steps
+    # (each a multi-minute round trip on CPU) — no reason to let it happen
+    # a third time before cutting it off.
+    repeating = len(tool_names) >= 2 and len(set(tool_names)) == 1
     fail_streak = 0
     for step in reversed(trace):
         if step.result_ok:
@@ -77,7 +81,7 @@ def evaluate_steer(
     if repeating and not last_failed:
         return {
             "steer": "rest",
-            "reason": f"same tool {tool_names[-1]} three times",
+            "reason": f"same tool {tool_names[-1]} called twice in a row with nothing new",
             "repeating": True,
             "last_failed": False,
             "belief_p": belief_p,
