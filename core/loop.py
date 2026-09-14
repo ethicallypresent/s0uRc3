@@ -60,6 +60,49 @@ log = logging.getLogger("agent.loop")
 THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 JSON_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _NEXT_LINE_RE = re.compile(r"(?im)^\s*next\s*:\s*(.+?)\s*$")
+_QUOTED_PATH_RE = re.compile(r"[\"'`]([^\"'`]{2,200})[\"'`]")
+_BARE_PATH_RE = re.compile(r"\b(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8}\b|\b[\w-]+\.[A-Za-z0-9]{1,8}\b")
+
+
+def _extract_path_hint(text: str) -> str | None:
+    """Best-effort file path guess pulled from free text.
+
+    Small local models can echo a given literal far more reliably than they
+    can generate the right one from an instruction (confirmed empirically:
+    a 1.2B model copied an example's path verbatim instead of substituting
+    the goal's real path, across multiple prompt rewordings). Surfacing the
+    likely path as a ready-made value shifts the model's job from "generate
+    a string" to "copy this string" — much closer to what it can actually do.
+    """
+    text = text or ""
+    for m in _QUOTED_PATH_RE.finditer(text):
+        candidate = m.group(1).strip()
+        if "/" in candidate or "." in candidate:
+            return candidate
+    m = _BARE_PATH_RE.search(text)
+    return m.group(0) if m else None
+
+
+def _extract_content_hint(text: str) -> str | None:
+    """Best-effort literal-to-write guess pulled from free text.
+
+    Same rationale as _extract_path_hint: confirmed empirically that a
+    write_file call can get the path right (once overridden) but still send
+    empty/missing content, because filling in an argument from an
+    instruction is the model's actual weak point, not any one field
+    specifically. A quoted string in the goal that doesn't look like a path
+    is the model's most likely intended content — hand it over as a literal
+    to copy instead of leaving the field for the model to generate blank.
+    """
+    text = text or ""
+    for m in _QUOTED_PATH_RE.finditer(text):
+        candidate = m.group(1).strip()
+        if not candidate:
+            continue
+        if "/" in candidate or _BARE_PATH_RE.fullmatch(candidate):
+            continue
+        return candidate
+    return None
 
 
 def reasoning_has_converged(partial_think_text: str) -> bool:
@@ -179,6 +222,45 @@ def load_system_prompt(paths: AgentPaths) -> str:
     return _load_system_prompt(paths)
 
 
+def _normalize_generic_tool_call(action: dict[str, Any]) -> dict[str, Any]:
+    """Translate a generic function-call shape into our action schema.
+
+    Confirmed empirically: pocket.gguf, when given room to ramble (deliberate
+    tier), sometimes abandons our documented schema entirely and reproduces
+    a generic {"type":"action","name":...,"parameters":{...}} tool-call shape
+    instead — almost certainly a pattern baked into its own pretraining, not
+    something coming from our prompt (it does this even with a stripped-down
+    prompt that never mentions this shape). Rather than losing the turn to
+    the malformed-output repair path every time, recognize this one specific
+    alternate shape and translate it directly.
+    """
+    if action.get("type") != "action" or not isinstance(action.get("name"), str):
+        return action
+    kind = action["name"]
+    normalized: dict[str, Any] = {"action": kind}
+    if isinstance(action.get("description"), str):
+        normalized["rationale"] = action["description"][:200]
+    params = action.get("parameters")
+    params = params if isinstance(params, dict) else {}
+    tool_name = params.get("tool_name")
+    if tool_name:
+        tool_args = params.get("tool_args")
+        if isinstance(tool_args, str):
+            try:
+                tool_args = json.loads(tool_args)
+            except (json.JSONDecodeError, TypeError):
+                tool_args = {}
+        normalized["tool"] = {"name": tool_name, "args": tool_args if isinstance(tool_args, dict) else {}}
+    if kind == "finish":
+        summary = params.get("summary") or params.get("output") or params.get("reason")
+        normalized["finish"] = {
+            "status": "success",
+            "summary": str(summary or normalized.get("rationale") or "done")[:400],
+            "artifacts": [],
+        }
+    return normalized
+
+
 def _try_load_action_json(raw: str) -> dict[str, Any]:
     """Parse an action object, with light salvage for truncated/malformed JSON."""
     try:
@@ -208,12 +290,13 @@ def _try_load_action_json(raw: str) -> dict[str, Any]:
                             "summary": (raw or "").strip()[:400] or "done",
                             "artifacts": [],
                         },
+                        "_synthesized": True,
                     }
                     log.warning("Salvaged free-text finish from malformed output")
                     return action
                 raise
             kind = am.group(1)
-            action = {"action": kind, "rationale": "salvaged from malformed model output"}
+            action = {"action": kind, "rationale": "salvaged from malformed model output", "_synthesized": True}
             if kind == "finish":
                 sm = re.search(r'"summary"\s*:\s*"((?:\\.|[^"\\])*)"', raw)
                 action["finish"] = {
@@ -225,6 +308,8 @@ def _try_load_action_json(raw: str) -> dict[str, Any]:
                 tm = re.search(r'"name"\s*:\s*"(\w+)"', raw)
                 action["tool"] = {"name": tm.group(1) if tm else "list_dir", "args": {"path": ".", "glob": "workspace/*"}}
             log.warning("Salvaged partial action %r from malformed JSON", kind)
+    if isinstance(action, dict) and "action" not in action:
+        action = _normalize_generic_tool_call(action)
     if not isinstance(action, dict) or "action" not in action:
         raise ValueError("action field missing")
     # Small models sometimes nest the action: {"action": {"action": "finish", ...}}
@@ -415,6 +500,12 @@ def build_user_packet(
         "steer": steer or {"steer": "continue", "reason": "no steer yet"},
         "reasoning_budget": reasoning_budget_line(tier),
     }
+    path_hint = _extract_path_hint(goal or user_input)
+    if path_hint:
+        payload["perception"]["path_hint"] = path_hint
+    content_hint = _extract_content_hint(goal or user_input)
+    if content_hint:
+        payload["perception"]["content_hint"] = content_hint
     if weak_think:
         payload["perception"]["unknown"] = list(payload["perception"].get("unknown") or []) + [
             "previous think lacked observed/inferred/speculative labels"
@@ -1550,12 +1641,14 @@ class AgentLoop:
                             "summary": f"Hello — I'm s0uRc3, the Builder Agent. Tools: {tool_list}.",
                             "artifacts": [],
                         },
+                        "_synthesized": True,
                     }
                 else:
                     action = {
                         "action": "use_tool",
                         "rationale": f"synthesized continue after unusable output ({exc})",
                         "tool": {"name": "list_dir", "args": {"path": ".", "glob": "*"}},
+                        "_synthesized": True,
                     }
 
             kind = action.get("action")
@@ -1582,6 +1675,7 @@ class AgentLoop:
                             "rationale": "normalized free-text reply",
                             "finish": {"status": "success", "summary": summary, "artifacts": []},
                             "memory_to_save": action.get("memory_to_save") or [],
+                            "_synthesized": True,
                         }
                         kind = "finish"
                     else:
@@ -1591,6 +1685,7 @@ class AgentLoop:
                             "rationale": f"normalized free-text action ({kind[:80]!r})",
                             "tool": {"name": "list_dir", "args": {"path": ".", "glob": "*"}},
                             "memory_to_save": action.get("memory_to_save") or [],
+                            "_synthesized": True,
                         }
                         kind = "use_tool"
                 else:
@@ -1607,6 +1702,43 @@ class AgentLoop:
                     )
 
             self.memory.wm.note(f"think:{think[:200]}")
+
+            if kind == "use_tool":
+                tool = action.get("tool")
+                perception = (packet_obj.get("perception") or {}) if isinstance(packet_obj, dict) else {}
+                path_hint_val = str(perception.get("path_hint") or "").strip()
+                content_hint_val = str(perception.get("content_hint") or "").strip()
+                tool_name = str(tool.get("name") or "") if isinstance(tool, dict) else ""
+                if isinstance(tool, dict) and tool_name in ("read_file", "write_file"):
+                    args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+                    new_args = dict(args)
+                    changed = False
+                    if path_hint_val and args.get("path") != path_hint_val:
+                        # Small local models cannot reliably fill this argument
+                        # in from the goal text (confirmed empirically: the
+                        # same model, prompted three different ways, produced
+                        # three different wrong paths). The extracted hint is
+                        # a better bet than whatever string the model wrote.
+                        log.info(
+                            "Step %d: overriding %s path arg %r with extracted path_hint %r",
+                            step, tool_name, args.get("path"), path_hint_val,
+                        )
+                        new_args["path"] = path_hint_val
+                        changed = True
+                    if tool_name == "write_file" and content_hint_val and not str(args.get("content") or "").strip():
+                        # Same weakness, different field: write_file's path can
+                        # now be right while content still comes back empty
+                        # (confirmed empirically — a real write with a 0-byte
+                        # result). Only fill in when the model left it blank;
+                        # a non-empty model-authored content is left alone.
+                        log.info(
+                            "Step %d: overriding %s empty content arg with extracted content_hint %r",
+                            step, tool_name, content_hint_val,
+                        )
+                        new_args["content"] = content_hint_val
+                        changed = True
+                    if changed:
+                        action["tool"]["args"] = new_args
 
             if kind == "request_confirmation":
                 log.info("Step %d: requesting human confirmation", step)
@@ -1628,7 +1760,14 @@ class AgentLoop:
                 source = "confirmation"
             cone_text = observed_text(result if isinstance(result, dict) else None, fallback=kind)
             self._observe(step=step, source=source, content=cone_text or kind, ok=bool(result.get("ok")))
-            if kind == "use_tool":
+            if kind == "use_tool" and not action.get("_synthesized"):
+                # Skip belief updates for tool calls we picked ourselves as a
+                # parser fallback (malformed output, disallowed action, etc.)
+                # — that's not the model demonstrating skill with the tool,
+                # and counting it inflates a "safe default" tool's earned
+                # trust (confirmed: list_dir hit 0.99 p_success purely from
+                # being the fallback-of-last-resort, then started winning
+                # tool selection for goals it had nothing to do with).
                 self._record_tool_belief(str((action.get("tool") or {}).get("name") or ""), bool(result.get("ok")))
             self.events.fire(
                 Event(
@@ -1651,6 +1790,7 @@ class AgentLoop:
                     drafts_used=self.drafts_this_run,
                     approved_skills=len([s for s in catalog if not s.get("draft")]),
                     tool_name=tool_name,
+                    synthesized=bool(action.get("_synthesized")),
                 )
             )
             steer = self.steering.evaluate(
@@ -1752,6 +1892,7 @@ class AgentLoop:
                         "action": "use_tool",
                         "rationale": "premature finish blocked; inspect first",
                         "tool": {"name": "list_dir", "args": {"path": ".", "glob": "*"}},
+                        "_synthesized": True,
                     }
                     kind = "use_tool"
                     result = self._dispatch(action)
@@ -1774,6 +1915,7 @@ class AgentLoop:
                             drafts_used=self.drafts_this_run,
                             approved_skills=len([s for s in catalog if not s.get("draft")]),
                             tool_name="list_dir",
+                            synthesized=bool(action.get("_synthesized")),
                         )
                     continue
 

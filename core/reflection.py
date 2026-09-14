@@ -137,6 +137,9 @@ class TraceStep:
     approved_skills: int = 0  # how many approved skills existed at this step
     think_snippet: str = ""   # first 200 chars of the <think> block
     tool_name: str = ""       # use_tool name, if any — needed for spin detection
+    synthesized: bool = False  # loop picked this action itself (parser fallback,
+                                # not a genuine model choice) — belief updates must
+                                # not credit or blame the tool for it
 
 
 @dataclass
@@ -478,8 +481,13 @@ class CounterfactualModel:
 class BeliefUpdater:
     """Soft, decay-weighted update of Beta beliefs after a run.
 
-    Successful run: every action type that appeared gets α += 1 (all
-    contributed to the good outcome).
+    Successful run: every action type that *itself succeeded* gets α += 1.
+    A step's own result_ok is ground truth for that step's belief update —
+    a run finishing "ok" overall does not retroactively make an individual
+    failed step a success (confirmed as a real bug: tool:list_dir reached
+    p_success=0.99 across 180+ observations almost entirely from being the
+    parser's fallback-of-last-resort on malformed output, not from the
+    model actually choosing and succeeding with it).
 
     Failed run: blame decays geometrically from the last step backward
     (γ = 0.8). The step immediately before failure gets blame ≈ 1.0;
@@ -489,6 +497,11 @@ class BeliefUpdater:
     This is a soft heuristic, not a rigorous causal attribution — it
     captures "late steps are more likely the proximate cause of failure"
     without claiming to identify the true causal chain.
+
+    Steps flagged `synthesized` (the loop picked the action itself — a
+    parser fallback for malformed/disallowed model output, not a genuine
+    model choice) are skipped entirely: crediting or blaming a tool for a
+    choice the model never actually made is not a belief about the tool.
     """
 
     def update(
@@ -496,8 +509,14 @@ class BeliefUpdater:
     ) -> None:
         n = len(trace)
         for i, step in enumerate(trace):
+            if step.synthesized:
+                continue
             b = beliefs.get(step.action)
-            if run_ok:
+            if not step.result_ok:
+                # This step failed on its own terms — that is real signal
+                # about this tool regardless of how the run ended overall.
+                b.update(success_weight=0.0, failure_weight=1.0)
+            elif run_ok:
                 b.update(success_weight=1.0, failure_weight=0.0)
             else:
                 rank_from_end = n - 1 - i
@@ -668,6 +687,7 @@ def save_last_trace(db_dir: Path, *, goal: str, result: dict[str, Any], trace: l
                 "approved_skills": t.approved_skills,
                 "think_snippet": t.think_snippet,
                 "tool_name": t.tool_name,
+                "synthesized": t.synthesized,
             }
             for t in trace
         ],
@@ -713,6 +733,7 @@ def trace_from_payload(payload: dict[str, Any]) -> list[TraceStep]:
                 approved_skills=int(item.get("approved_skills", 0)),
                 think_snippet=str(item.get("think_snippet", "")),
                 tool_name=str(item.get("tool_name", "")),
+                synthesized=bool(item.get("synthesized", False)),
             )
         )
     return out
@@ -746,14 +767,33 @@ def reward_last_run(
         return {"ok": False, "error": "empty_trace", "message": "Last trace has no steps."}
 
     engine = ReflectionEngine(cfg, db_dir)
-    # Force success labeling so BeliefUpdater applies full α credit.
+    # Note: run_ok=True here (this run is being rewarded), but BeliefUpdater
+    # still checks each step's own result_ok and skips synthesized steps —
+    # rewarding the run doesn't retroactively make a step's own failure a
+    # success, and doesn't credit a tool for a choice the loop made for it.
     fake_result = {"ok": True, "rewarded": True, "steps": len(trace)}
     report = engine.reflect(trace, fake_result)
 
-    # Extra reward nudge: +1 α on every action that appeared (on top of reflect).
+    # Extra reward nudge: +1 α on top of reflect's update, but only for what
+    # this run actually improved on — a step that failed, or one the loop
+    # synthesized itself, gets no nudge, and only the *first* occurrence of
+    # a repeated (action, tool) pair earns it. Repeats are redundant work
+    # (e.g. calling the same tool on the same target three times in a row):
+    # the model already got credit for the pattern once, and re-rewarding
+    # every repeat is exactly how tool:list_dir's belief got inflated by
+    # trivially-successful, goal-irrelevant repetition in the first place.
+    seen: set[tuple[str, str]] = set()
+    nudged = 0
     for step in trace:
+        if step.synthesized or not step.result_ok:
+            continue
+        key = (step.action, step.tool_name)
+        if key in seen:
+            continue
+        seen.add(key)
         b = engine.beliefs.get(step.action)
         b.update(success_weight=1.0, failure_weight=0.0)
+        nudged += 1
     engine.beliefs.save()
 
     lessons_saved = 0
@@ -771,15 +811,18 @@ def reward_last_run(
     (db_dir / LAST_TRACE_FILE).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     summary = report.one_line_summary()
+    skipped = len(trace) - nudged
     return {
         "ok": True,
         "already_rewarded": False,
         "goal": payload.get("goal"),
         "steps": len(trace),
+        "steps_nudged": nudged,
+        "steps_skipped": skipped,
         "lessons_saved": lessons_saved,
         "summary": summary,
         "run_analysis": report.run_analysis,
-        "message": f"Rewarded. {summary}",
+        "message": f"Rewarded {nudged}/{len(trace)} step(s); {skipped} skipped (failed, synthesized, or repeat). {summary}",
     }
 
 

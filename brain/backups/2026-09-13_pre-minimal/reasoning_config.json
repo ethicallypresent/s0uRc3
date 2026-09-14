@@ -35,9 +35,9 @@
     "workspace/",
     "skills/drafts/"
   ],
-  "require_think_block": false,
-  "think_block_must_cite_source": false,
-  "think_block_min_chars": 1,
+  "require_think_block": true,
+  "think_block_must_cite_source": true,
+  "think_block_min_chars": 20,
   "creation": {
     "energy_per_step": 1.0,
     "full_ctx_threshold": 8192
@@ -131,5 +131,5 @@
     "jinja": true,
     "alias": "pocket"
   },
-  "config_revision": 16
+  "config_revision": 7
 }
