@@ -49,6 +49,8 @@ from core.context import gather_context
 from core.reasoning import packet_with_reasoning
 from core.reflection import ReflectionEngine, TraceStep, save_last_trace
 from core.router import ACT, DELIBERATE, GLANCE, TIER_MAX_TOKENS_DEFAULTS, classify_turn, reasoning_budget_line
+from core.tool_formatter import format_args as format_tool_args
+from core.action_schema import parse_structured_output, response_format as action_response_format
 from core.complete import complete_finish
 from core.season import archive_stale_skills
 from core.skill_manager import SkillManager
@@ -162,6 +164,13 @@ Rules:
   signatures, inputs/outputs.
 - Output ONLY the revised code. No explanation, no commentary.
 """
+
+CRITIC_SYSTEM = """You are an independent verifier for an autonomous agent, not the agent itself.
+You will be shown a goal, what the agent claims it did, and what was actually
+observed. Decide only whether the claimed outcome genuinely satisfies the
+goal — do not redo the work, do not suggest improvements, do not comment on
+style. Reply with exactly one JSON object and nothing else:
+{"success": true|false, "critique": "<one short sentence, empty string if success is true>"}"""
 
 PermissionDecision = Literal["allow", "deny", "allow_run"]
 PermissionCallback = Callable[[dict[str, Any]], str]
@@ -447,6 +456,7 @@ def build_user_packet(
     steer: dict[str, Any] | None = None,
     judgment: dict[str, Any] | None = None,
     tier: str = DELIBERATE,
+    structured: bool = False,
 ) -> str:
     # Octopus box: multi-arm recall over SQLite + beliefs + skills + tools + evolution.
     paths = paths or AgentPaths.discover()
@@ -520,7 +530,7 @@ def build_user_packet(
         "evolution": evolution or box.get("evolution") or {},
         "named_entities": named if named is not None else (box.get("named_entities") or []),
         "steer": steer or {"steer": "continue", "reason": "no steer yet"},
-        "reasoning_budget": reasoning_budget_line(tier),
+        "reasoning_budget": reasoning_budget_line(tier, structured=structured),
     }
     path_hint = _extract_path_hint(goal or user_input)
     if path_hint:
@@ -555,35 +565,66 @@ def build_user_packet(
     # No standing "think step by step" instruction (thinking-budgets item 1)
     # — reasoning_budget in the packet is the only word on whether/how much
     # to think this turn, decided by the router before this packet existed.
-    if tier == ACT:
-        turn_instruction = "reasoning_budget says act. Skip <think> entirely. Output only one json action, nothing else."
-    elif tier == GLANCE:
-        turn_instruction = (
-            f"reasoning_budget says glance. One short <think> line (~50 tokens: what, next), then act. "
-            f"Treat tool.observed as fact; error is not a success. "
-            f"{human_interrupt_note}"
-            f"Then output <think>…</think> and one json action."
-        )
+    if structured:
+        # core/action_schema.py grammar-constrains the whole completion to a
+        # single valid action object — "think" is a schema field, not a tag,
+        # so there's no <think>/json split left to instruct around, and no
+        # "never echo the packet" warning needed (echoing it back wouldn't
+        # even satisfy the schema).
+        if tier == ACT:
+            turn_instruction = "reasoning_budget says act. Leave the think field empty or omit it."
+        elif tier == GLANCE:
+            turn_instruction = (
+                f"reasoning_budget says glance. Keep think to one short line (~50 tokens: what, next). "
+                f"Treat tool.observed as fact; error is not a success. "
+                f"{human_interrupt_note}"
+            )
+        else:
+            turn_instruction = (
+                f"reasoning_budget says deliberate. Reach into context (memory, beliefs, skills, tools) "
+                f"before you act. Reference what you pulled in think. Label claims observed / inferred / "
+                f"speculative. Cite named_entities, plan_health, judgment, and steer.steer. "
+                f"Treat tool.observed as fact; error is not a success. "
+                f"One plan node in_progress. Finish with observed / inferred / unknown. "
+                f"{human_interrupt_note}"
+            )
+        wrapped = f"Mode hint: {mode}. {turn_instruction}\n\nPACKET:\n{body}"
     else:
-        turn_instruction = (
-            f"reasoning_budget says deliberate. Reach into context (memory, beliefs, skills, tools) "
-            f"before you act. Reference what you pulled in <think>. Label claims observed / inferred / "
-            f"speculative. Cite named_entities, plan_health, judgment, and steer.steer. "
-            f"Treat tool.observed as fact; error is not a success. "
-            f"One plan node in_progress. Finish with observed / inferred / unknown. "
-            f"{human_interrupt_note}"
-            f"Then output <think>…</think> and one json action."
+        if tier == ACT:
+            turn_instruction = "reasoning_budget says act. Skip <think> entirely. Output only one json action, nothing else."
+        elif tier == GLANCE:
+            turn_instruction = (
+                f"reasoning_budget says glance. One short <think> line (~50 tokens: what, next), then act. "
+                f"Treat tool.observed as fact; error is not a success. "
+                f"{human_interrupt_note}"
+                f"Then output <think>…</think> and one json action."
+            )
+        else:
+            turn_instruction = (
+                f"reasoning_budget says deliberate. Reach into context (memory, beliefs, skills, tools) "
+                f"before you act. Reference what you pulled in <think>. Label claims observed / inferred / "
+                f"speculative. Cite named_entities, plan_health, judgment, and steer.steer. "
+                f"Treat tool.observed as fact; error is not a success. "
+                f"One plan node in_progress. Finish with observed / inferred / unknown. "
+                f"{human_interrupt_note}"
+                f"Then output <think>…</think> and one json action."
+            )
+        wrapped = (
+            f"Mode hint: {mode}. {turn_instruction} "
+            f"Never write the packet below into your output — reply only with your own new think block and json action.\n\nPACKET:\n{body}"
         )
-    wrapped = (
-        f"Mode hint: {mode}. {turn_instruction} "
-        f"Never write the packet below into your output — reply only with your own new think block and json action.\n\nPACKET:\n{body}"
-    )
+    if tier != DELIBERATE:
+        # act/glance already told the model how much (if any) to think above —
+        # the first-principles scaffold is full deliberate-only reasoning and
+        # would contradict that budget, so only attach it when tier warrants it.
+        return wrapped
     return packet_with_reasoning(
         wrapped,
         goal=goal,
         mode=mode,
         step=step,
         last_result=last if isinstance(last, dict) else None,
+        plan_seed=bool(health.get("seed")),
     )
 
 
@@ -670,6 +711,7 @@ def _chat_payload(
     messages: list[dict[str, str]],
     temperature: float | None = None,
     max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an OpenAI-compatible chat payload.
 
@@ -682,6 +724,10 @@ def _chat_payload(
         "temperature": temperature if temperature is not None else llm.get("temperature", 0.2),
         "max_tokens": max_tokens if max_tokens is not None else llm.get("max_tokens", 800),
     }
+    if response_format is not None:
+        # core/action_schema.py — grammar-constrains the whole completion to
+        # a valid action object on backends that support it (llama.cpp).
+        payload["response_format"] = response_format
     if "top_p" in llm and llm["top_p"] is not None:
         payload["top_p"] = float(llm["top_p"])
     backend = str(llm.get("backend") or "llamacpp").lower()
@@ -711,6 +757,7 @@ def call_llm_stream(
     model: str | None = None,
     on_token: Callable[[str], None] | None = None,
     max_tokens: int | None = None,
+    response_format: dict[str, Any] | None = None,
 ):
     """Yield text tokens from llama.cpp (OpenAI SSE). Falls back to one-shot."""
     llm = cfg.get("llm") or {}
@@ -729,6 +776,7 @@ def call_llm_stream(
             {"role": "user", "content": packet},
         ],
         max_tokens=max_tokens,
+        response_format=response_format,
     )
     payload["stream"] = True
     log.debug("LLM stream -> %s/chat/completions (model=%s)", base_url, use_model)
@@ -1148,6 +1196,69 @@ class AgentLoop:
             goal=goal,
         )
 
+    def _critic_check(
+        self, *, goal: str, finish: dict[str, Any], last_result: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Independent second opinion on a claimed `finish`, decoupled from
+        the actor's own summary.
+
+        core/measure.py::judge only trusts the last tool's ok flag — nothing
+        today checks a `finish` action's own success claim against the goal,
+        so a plausible-sounding summary that didn't actually satisfy the
+        goal can go unchallenged. One extra, isolated LLM call, modeled on
+        Voyager's critic agent (github.com/MineDojo/Voyager): it never sees
+        the run's own reasoning trace, only the goal and what was observed.
+
+        Best-effort — any failure here must never block a real finish, so
+        this returns None ("skip, trust the actor") rather than raising.
+
+        Deliberately bypasses _call_with_timeout/call_llm_stream: those floor
+        the timeout at 900s whenever num_gpu<=0, sized for prefilling a full
+        deliberate packet on CPU. This packet is a few hundred tokens — a
+        stuck critic should fail fast and skip, not add up to 15 minutes to
+        every deliberate finish on a CPU-only setup.
+        """
+        packet = json.dumps(
+            {
+                "goal": goal,
+                "claimed_status": finish.get("status"),
+                "claimed_summary": finish.get("summary"),
+                "last_observed": observed_text(last_result) if isinstance(last_result, dict) else None,
+            },
+            separators=(",", ":"),
+        )
+        llm = self.cfg.get("llm") or {}
+        base_url = str(llm.get("base_url") or DEFAULT_LLM_CFG["base_url"]).rstrip("/")
+        model = llm.get("model", DEFAULT_LLM_CFG["model"])
+        api_key = llm.get("api_key", DEFAULT_LLM_CFG["api_key"])
+        timeout = int(self.cfg.get("finish_critic_timeout_sec", 45))
+        payload = _chat_payload(
+            llm,
+            model=model,
+            messages=[
+                {"role": "system", "content": CRITIC_SYSTEM},
+                {"role": "user", "content": packet},
+            ],
+            temperature=0.0,
+            max_tokens=120,
+        )
+        try:
+            data = _post_json(f"{base_url}/chat/completions", payload, api_key, timeout)
+        except LLMTransientError as exc:
+            log.info("critic check skipped after %s", exc.trigger)
+            return None
+        raw = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            obj = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict) or "success" not in obj:
+            return None
+        return {"success": bool(obj.get("success")), "critique": str(obj.get("critique") or "")[:300]}
+
     def _record_tool_belief(self, tool_name: str, ok: bool) -> None:
         if not tool_name:
             return
@@ -1175,6 +1286,18 @@ class AgentLoop:
             return int(llm.get("glance_max_tokens", TIER_MAX_TOKENS_DEFAULTS[GLANCE]))
         return int(llm.get("deliberate_max_tokens", llm.get("max_tokens", TIER_MAX_TOKENS_DEFAULTS[DELIBERATE])))
 
+    def _structured_enabled(self) -> bool:
+        """Whether this turn should use response_format-constrained decoding
+        (core/action_schema.py) instead of the free-text <think>+json
+        protocol. llamacpp-only for now — response_format support and its
+        exact semantics vary too much across other OpenAI-compatible
+        backends to trust blindly."""
+        so = self.cfg.get("structured_output") or {}
+        if not so.get("enabled"):
+            return False
+        backend = str((self.cfg.get("llm") or {}).get("backend") or "llamacpp").lower()
+        return backend in ("llamacpp", "llama.cpp", "llama-server")
+
     def _get_model_output(
         self,
         packet: str,
@@ -1183,14 +1306,24 @@ class AgentLoop:
         *,
         max_tokens: int | None = None,
         tier: str = DELIBERATE,
-    ) -> str:
-        """Get raw model text, handling dry-run/no-server fallback and retries."""
+        structured: bool = False,
+    ) -> tuple[str, bool]:
+        """Get raw model text, handling dry-run/no-server fallback and retries.
+
+        Returns (raw_text, used_structured) — dry_run_policy() always emits
+        the free-text <think>+json form regardless of what was requested,
+        both when dry_run=True and on the "server unreachable" fallback
+        below, so the caller must be told which format it actually got
+        back rather than trusting the `structured` it asked for.
+        """
         if dry_run:
-            return dry_run_policy(packet_obj)
+            return dry_run_policy(packet_obj), False
+        response_format = action_response_format() if structured else None
         try:
             return self._call_with_timeout(
-                self.system_prompt, packet, self.cfg, model=None, max_tokens=max_tokens, tier=tier
-            )
+                self.system_prompt, packet, self.cfg, model=None, max_tokens=max_tokens, tier=tier,
+                response_format=response_format,
+            ), structured
         except LLMTransientError as exc:
             log.warning("LLM call failed trigger=%s detail=%s", exc.trigger, exc)
             llm = self.cfg.get("llm") or {}
@@ -1200,7 +1333,7 @@ class AgentLoop:
 
                 if not is_healthy(base if base.endswith("/v1") else base.rstrip("/") + "/v1"):
                     log.warning("llama-server unreachable; falling back to dry-run policy")
-                    return dry_run_policy(packet_obj)
+                    return dry_run_policy(packet_obj), False
                 log.warning(
                     "llama-server still healthy after %s — not treating as down",
                     exc.trigger,
@@ -1214,8 +1347,9 @@ class AgentLoop:
             ):
                 log.info("Retrying with fallback model %s after %s", fallback, exc.trigger)
                 return self._call_with_timeout(
-                    self.system_prompt, packet, self.cfg, model=fallback, max_tokens=max_tokens, tier=tier
-                )
+                    self.system_prompt, packet, self.cfg, model=fallback, max_tokens=max_tokens, tier=tier,
+                    response_format=response_format,
+                ), structured
             raise
 
     def _call_with_timeout(
@@ -1227,6 +1361,7 @@ class AgentLoop:
         model: str | None,
         max_tokens: int | None = None,
         tier: str = DELIBERATE,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
         # Stream tokens when a callback is set; still bound by timeout via a worker.
         timeout = int((cfg.get("llm") or {}).get("timeout_sec", DEFAULT_LLM_CFG["timeout_sec"]))
@@ -1236,14 +1371,23 @@ class AgentLoop:
             timeout = max(timeout, 900)
         on_token = getattr(self, "on_token", None)
         # Stopping rule (thinking-budgets item 4): only meaningful for a long
-        # deliberate reasoning block. act has no <think>; glance is capped so
-        # tight there's rarely room for the pattern to repeat twice anyway.
-        check_convergence = tier == DELIBERATE and bool((cfg.get("llm") or {}).get("stop_on_converged_thinking", True))
+        # deliberate reasoning block using the free-text <think> convention.
+        # response_format already grammar-constrains structured turns to a
+        # single valid object — there's no "</think>" to detect and no
+        # free-running repetition to cut off; the schema itself is the stop.
+        check_convergence = (
+            tier == DELIBERATE
+            and response_format is None
+            and bool((cfg.get("llm") or {}).get("stop_on_converged_thinking", True))
+        )
 
         def _run() -> str:
             parts: list[str] = []
             think_closed = False
-            stream = call_llm_stream(system, packet, cfg, model=model, on_token=on_token, max_tokens=max_tokens)
+            stream = call_llm_stream(
+                system, packet, cfg, model=model, on_token=on_token, max_tokens=max_tokens,
+                response_format=response_format,
+            )
             for piece in stream:
                 parts.append(piece)
                 if not check_convergence or think_closed:
@@ -1267,16 +1411,22 @@ class AgentLoop:
             except concurrent.futures.TimeoutError as exc:
                 raise LLMTransientError("timeout") from exc
 
-    def _parse_with_retry(self, raw: str, packet: str, packet_obj: dict[str, Any], dry_run: bool) -> tuple[str, dict[str, Any]]:
+    def _parse_with_retry(
+        self, raw: str, packet: str, packet_obj: dict[str, Any], dry_run: bool, *, structured: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        parser = parse_structured_output if structured else parse_model_output
         try:
-            return parse_model_output(raw)
+            return parser(raw)
         except (ValueError, json.JSONDecodeError) as exc:
             log.warning("Malformed model output: %s", exc)
             log.debug("Raw model output (truncated): %s", (raw or "")[:1200])
             if dry_run or "malformed_output" not in self.fallback_triggers:
                 raise
-            # Prefer a short repair pass over blindly re-running the full prompt
-            # on the same small local model (which often repeats the failure).
+            # The repair pass always asks for the free-text <think>+json
+            # form regardless of whether the original call was structured
+            # (grammar-constraint failing at all is rare enough — truncation
+            # from a too-small max_tokens, mainly — that it isn't worth a
+            # second response_format-constrained round trip here).
             try:
                 repaired = self._repair_model_output(raw, packet)
                 return parse_model_output(repaired)
@@ -1605,7 +1755,11 @@ class AgentLoop:
                 human_interrupted=bool(steer_text),
             )
             step_max_tokens = self._choose_max_tokens(tier)
-            log.info("Step %d: tier=%s max_tokens=%d mode=%s", step, tier, step_max_tokens, mode)
+            structured = self._structured_enabled()
+            log.info(
+                "Step %d: tier=%s max_tokens=%d mode=%s structured=%s",
+                step, tier, step_max_tokens, mode, structured,
+            )
             packet = build_user_packet(
                 goal=goal,
                 user_input=steer_text or (goal if step == 1 else ""),
@@ -1631,6 +1785,7 @@ class AgentLoop:
                 },
                 step=step,
                 paths=self.paths,
+                structured=structured,
             )
             # Packet may be wrapped with reasoning lenses + anti-echo instructions.
             json_blob = packet
@@ -1641,8 +1796,10 @@ class AgentLoop:
             packet_obj = json.loads(json_blob)
 
             try:
-                raw = self._get_model_output(packet, packet_obj, dry_run, max_tokens=step_max_tokens, tier=tier)
-                think, action = self._parse_with_retry(raw, packet, packet_obj, dry_run)
+                raw, used_structured = self._get_model_output(
+                    packet, packet_obj, dry_run, max_tokens=step_max_tokens, tier=tier, structured=structured,
+                )
+                think, action = self._parse_with_retry(raw, packet, packet_obj, dry_run, structured=used_structured)
                 self._check_think(think, dry_run=dry_run, tier=tier)
             except (LLMTransientError, ValueError, json.JSONDecodeError) as exc:
                 log.warning("Step %d: model output unusable (%s) — synthesizing loop action", step, exc)
@@ -1743,6 +1900,33 @@ class AgentLoop:
                     log.info("Step %d: overriding tool name read_file -> write_file (content_hint present)", step)
                     tool_name = "write_file"
                     action["tool"]["name"] = tool_name
+                if isinstance(tool, dict) and tool_name:
+                    # General arg-formatting pass (core/tool_formatter.py):
+                    # a tiny model purpose-built for function-calling fills
+                    # in args from goal + hints + pocket's own draft, for
+                    # *any* tool — a no-op (returns None) unless
+                    # tool_formatter.enabled is set and its server is up.
+                    # The read_file/write_file overrides right below are a
+                    # deterministic safety net on top of this, not a
+                    # replacement for it.
+                    tool_entry = self.tools.manifest_entry(tool_name)
+                    pocket_args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
+                    if tool_entry is not None:
+                        formatted = format_tool_args(
+                            cfg=self.cfg,
+                            tool_entry=tool_entry,
+                            goal=goal,
+                            hints={"path_hint": path_hint_val, "content_hint": content_hint_val},
+                            pocket_args=pocket_args,
+                        )
+                        if formatted is not None:
+                            merged = dict(pocket_args)
+                            merged.update(formatted)
+                            action["tool"]["args"] = merged
+                            log.info(
+                                "Step %d: tool_formatter filled %s args: %s",
+                                step, tool_name, sorted(formatted.keys()),
+                            )
                 if isinstance(tool, dict) and tool_name in ("read_file", "write_file"):
                     args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
                     new_args = dict(args)
@@ -1959,6 +2143,26 @@ class AgentLoop:
                     goal=goal,
                     last_result=result if isinstance(result, dict) else None,
                 )
+                # Only worth the extra call on a deliberate-tier claim of
+                # success — act/glance don't budget for it, and a claimed
+                # failure/blocked already says the actor itself isn't
+                # confident, so there's nothing to double-check.
+                if (
+                    tier == DELIBERATE
+                    and not self._dry_run
+                    and finish.get("status") == "success"
+                    and self.cfg.get("finish_critic_enabled", True)
+                ):
+                    critique = self._critic_check(
+                        goal=goal, finish=finish, last_result=result if isinstance(result, dict) else None,
+                    )
+                    if critique is not None and not critique["success"]:
+                        log.warning(
+                            "Step %d: critic disagreed with claimed success — %s",
+                            step, critique["critique"],
+                        )
+                        finish["status"] = "failed"
+                        finish["critique"] = critique["critique"]
                 return self._finalize_run(
                     goal,
                     {
