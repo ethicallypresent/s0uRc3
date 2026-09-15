@@ -19,9 +19,14 @@ from typing import Any
 
 log = logging.getLogger("agent.llama_server")
 
-_proc: subprocess.Popen[str] | None = None
-_model_path: str | None = None
-_log_handles: list[Any] = []
+# Keyed by port so more than one llama-server instance can run at once
+# (e.g. the primary "pocket" reasoning model on 8080 plus a second, tiny
+# tool-call formatter model on another port). Every existing zero-arg
+# caller (main.py, core/model.py, the TUI) only ever managed the primary
+# server, so every function here keeps port=8080 as its default — that
+# preserves their exact old behavior without touching those call sites.
+_DEFAULT_PORT = 8080
+_servers: dict[int, dict[str, Any]] = {}
 
 
 def find_binary(root: Path) -> Path | None:
@@ -55,24 +60,32 @@ def is_healthy(base_url: str = "http://127.0.0.1:8080/v1", timeout: float = 2.0)
         return False
 
 
-def current_model_path() -> str | None:
-    return _model_path
+def current_model_path(port: int = _DEFAULT_PORT) -> str | None:
+    entry = _servers.get(port)
+    return entry.get("model_path") if entry else None
 
 
-def _close_logs() -> None:
-    global _log_handles
-    for handle in _log_handles:
+def _close_logs(port: int) -> None:
+    entry = _servers.get(port)
+    if not entry:
+        return
+    for handle in entry.get("log_handles") or []:
         try:
             handle.close()
         except Exception:  # noqa: BLE001
             pass
-    _log_handles = []
+    entry["log_handles"] = []
 
 
-def _log_paths(root: Path) -> tuple[Path, Path]:
+def _log_paths(root: Path, alias: str) -> tuple[Path, Path]:
     folder = root / "workspace"
     folder.mkdir(parents=True, exist_ok=True)
-    return folder / "llama_server.out.log", folder / "llama_server.err.log"
+    # The primary server keeps its original, unsuffixed filenames — other
+    # instances (core/maintain.py's _LOG_NAMES doesn't know about them) are
+    # namespaced by alias so they can't collide or shadow the primary's log.
+    if alias in ("", "pocket"):
+        return folder / "llama_server.out.log", folder / "llama_server.err.log"
+    return folder / f"llama_server.{alias}.out.log", folder / f"llama_server.{alias}.err.log"
 
 
 def _read_tail(path: Path, *, limit: int = 2000) -> str:
@@ -237,7 +250,6 @@ def ensure_running(
     dry_penalty_last_n: int | None = None,
 ) -> dict[str, Any]:
     """Ensure llama-server is serving. Starts one if needed. Returns status dict."""
-    global _proc, _model_path
     from core.launcher import parse_port, validate_launch
 
     port_i, port_err = parse_port(port)
@@ -248,7 +260,7 @@ def ensure_running(
     wrong_model = bool(live_ids) and alias not in live_ids
     if force_restart or wrong_model:
         log.info("Restarting llama-server (force=%s wrong_model=%s live=%s want=%s)", force_restart, wrong_model, live_ids, alias)
-        stop()
+        stop(port_i)
         _kill_listener(port_i)
         for _ in range(16):
             if not is_healthy(base):
@@ -299,7 +311,8 @@ def ensure_running(
         dry_allowed_length=dry_allowed_length,
         dry_penalty_last_n=dry_penalty_last_n,
     )
-    out_path, err_path = _log_paths(root)
+    port_i = int(port)
+    out_path, err_path = _log_paths(root, alias)
     log.info("Starting llama-server: %s (cwd=%s)", " ".join(args), bin_dir)
     try:
         # Keep as a child of this process (UI/CLI owns lifetime). Do not
@@ -308,69 +321,69 @@ def ensure_running(
         creation = 0
         if os.name == "nt":
             creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        _close_logs()
+        _close_logs(port_i)
         out_h = out_path.open("w", encoding="utf-8")
         err_h = err_path.open("w", encoding="utf-8")
-        _log_handles.extend([out_h, err_h])
-        _proc = subprocess.Popen(
+        proc = subprocess.Popen(
             args,
             cwd=str(bin_dir),
             stdout=out_h,
             stderr=err_h,
             creationflags=creation,
         )
+        _servers[port_i] = {"proc": proc, "model_path": None, "log_handles": [out_h, err_h]}
     except OSError as exc:
-        _close_logs()
+        _close_logs(port_i)
         return {"ok": False, "error": f"failed to spawn llama-server: {exc}"}
 
-    atexit.register(stop)
+    atexit.register(stop, port_i)
     deadline = time.time() + startup_timeout_sec
     while time.time() < deadline:
-        if _proc.poll() is not None:
+        if proc.poll() is not None:
             tail = _read_tail(err_path)
-            log.error("llama-server exited early code=%s log=%s", _proc.returncode, tail[-800:])
+            log.error("llama-server exited early code=%s log=%s", proc.returncode, tail[-800:])
             return {
                 "ok": False,
-                "error": f"llama-server exited early code={_proc.returncode}",
+                "error": f"llama-server exited early code={proc.returncode}",
                 "log": tail,
             }
         if is_healthy(base):
             ids = list_models(base)
-            _model_path = str(model.resolve())
-            log.info("llama-server ready at %s pid=%s ids=%s", base, _proc.pid, ids)
+            model_path_str = str(model.resolve())
+            _servers[port_i]["model_path"] = model_path_str
+            log.info("llama-server ready at %s pid=%s ids=%s", base, proc.pid, ids)
             return {
                 "ok": True,
                 "started": True,
                 "base_url": base,
-                "pid": _proc.pid,
-                "model_path": _model_path,
+                "pid": proc.pid,
+                "model_path": model_path_str,
                 "ids": ids,
             }
         time.sleep(0.75)
     tail = _read_tail(err_path)
-    stop()
+    stop(port_i)
     log.error("llama-server start timed out log=%s", tail[-800:])
     return {"ok": False, "error": "timed out waiting for llama-server", "log": tail}
 
 
-def stop() -> None:
-    global _proc, _model_path
-    if _proc is None:
-        _model_path = None
-        _close_logs()
+def stop(port: int = _DEFAULT_PORT) -> None:
+    entry = _servers.get(port)
+    if not entry:
+        _close_logs(port)
         return
+    proc: subprocess.Popen[str] | None = entry.get("proc")
     try:
-        if _proc.poll() is None:
-            _proc.terminate()
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
             try:
-                _proc.wait(timeout=3)
+                proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                _proc.kill()
+                proc.kill()
     except Exception:  # noqa: BLE001
         pass
-    _proc = None
-    _model_path = None
-    _close_logs()
+    _close_logs(port)
+    _servers.pop(port, None)
 
 
 def sampling_kwargs(llm: dict[str, Any]) -> dict[str, Any]:
@@ -397,21 +410,50 @@ def ensure_from_config(root: Path, cfg: dict[str, Any]) -> dict[str, Any]:
     llm = cfg.get("llm") or {}
     ls = cfg.get("llama_server") or {}
     if not ls.get("auto_start", True):
-        return {"ok": True, "started": False, "skipped": True}
-    backend = str(llm.get("backend") or ls.get("backend") or "llamacpp").lower()
-    if backend not in ("llamacpp", "llama.cpp", "llama-server"):
-        return {"ok": True, "started": False, "skipped": True, "backend": backend}
-    return ensure_running(
-        root,
-        model_path=str(ls.get("model_path") or "models/pocket.gguf"),
-        host=str(ls.get("host") or "127.0.0.1"),
-        port=int(ls.get("port") or 8080),
-        alias=str(ls.get("alias") or llm.get("model") or "pocket"),
-        num_ctx=int(llm.get("num_ctx") or 4096),
-        num_thread=int(llm.get("num_thread") or 6),
-        num_batch=int(llm.get("num_batch") or 128),
-        num_gpu=max(0, int(llm.get("num_gpu") or 0)),
-        force_restart=bool(ls.get("force_restart") or False),
-        jinja=bool(ls.get("jinja", True)),
-        **sampling_kwargs(llm),
-    )
+        result = {"ok": True, "started": False, "skipped": True}
+    else:
+        backend = str(llm.get("backend") or ls.get("backend") or "llamacpp").lower()
+        if backend not in ("llamacpp", "llama.cpp", "llama-server"):
+            result = {"ok": True, "started": False, "skipped": True, "backend": backend}
+        else:
+            result = ensure_running(
+                root,
+                model_path=str(ls.get("model_path") or "models/pocket.gguf"),
+                host=str(ls.get("host") or "127.0.0.1"),
+                port=int(ls.get("port") or 8080),
+                alias=str(ls.get("alias") or llm.get("model") or "pocket"),
+                num_ctx=int(llm.get("num_ctx") or 4096),
+                num_thread=int(llm.get("num_thread") or 6),
+                num_batch=int(llm.get("num_batch") or 128),
+                num_gpu=max(0, int(llm.get("num_gpu") or 0)),
+                force_restart=bool(ls.get("force_restart") or False),
+                jinja=bool(ls.get("jinja", True)),
+                **sampling_kwargs(llm),
+            )
+    # Second, independent instance for the tool-call arg formatter
+    # (core/tool_formatter.py). Best-effort and never allowed to affect the
+    # primary result above — a missing/failed formatter server just means
+    # core/loop.py falls back to the reasoning model's own args, same as
+    # before this existed.
+    fc = cfg.get("tool_formatter") or {}
+    if fc.get("enabled"):
+        fls = cfg.get("llama_server_tool_formatter") or {}
+        try:
+            fc_result = ensure_running(
+                root,
+                model_path=str(fls.get("model_path") or "models/functiongemma.gguf"),
+                host=str(fls.get("host") or "127.0.0.1"),
+                port=int(fls.get("port") or 8081),
+                alias=str(fls.get("alias") or fc.get("model") or "functiongemma"),
+                num_ctx=int(fc.get("num_ctx") or 4096),
+                num_thread=int(fc.get("num_thread") or llm.get("num_thread") or 6),
+                num_batch=int(fc.get("num_batch") or 128),
+                num_gpu=max(0, int(fc.get("num_gpu") or 0)),
+                force_restart=bool(fls.get("force_restart") or False),
+                jinja=bool(fls.get("jinja", True)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tool_formatter server failed to start: %s", exc)
+            fc_result = {"ok": False, "error": str(exc)}
+        result["tool_formatter"] = fc_result
+    return result

@@ -35,7 +35,16 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from core.memory import cosine, get_embedding_tagged
+
 log = logging.getLogger("agent.skills")
+
+# Weight of semantic similarity in list_skills' ranking, in units of
+# "keyword hits" (see list_skills): a near-perfect semantic match (~1.0)
+# outranks a couple of incidental word overlaps but never fully drowns out
+# an exact keyword hit. Kept small deliberately — the embedding score is a
+# tie-breaker on top of keyword overlap, not a replacement for it.
+SEMANTIC_SIM_WEIGHT = 3.0
 
 SKILL_KINDS = ("transform", "retrieve", "verify", "notify")
 TRANSFORM_KEYS = ("text", "data", "output", "value", "result", "echo", "content")
@@ -170,6 +179,17 @@ class SkillManager:
         self.archived = self.root / "archived"
         for d in (self.drafts, self.approved, self.core, self.archived):
             d.mkdir(parents=True, exist_ok=True)
+        # Skill file path -> (vector, space, mtime). Embedding a description
+        # is a network round-trip to the local embedding server; skills
+        # rarely change within a run, so caching here avoids re-embedding
+        # the whole library on every list_skills() call (gather_context
+        # calls it once per turn — see core/context.py).
+        self._embed_cache: dict[str, tuple[list[float], str, float]] = {}
+        # Single-slot memo for the goal's own embedding: list_skills() runs
+        # twice per turn on the same goal text (once directly from the loop,
+        # once via gather_context), so without this the goal gets embedded
+        # twice for no reason every step.
+        self._last_goal_embed: tuple[str, list[float], str] | None = None
 
     # -- discovery ------------------------------------------------------
 
@@ -182,10 +202,42 @@ class SkillManager:
             files.extend(sorted(d.glob("*.py")))
         return files
 
+    def _goal_embedding(self, goal: str) -> tuple[list[float], str]:
+        """Embed `goal`, memoized against the single most recent call."""
+        cached = self._last_goal_embed
+        if cached is not None and cached[0] == goal:
+            return cached[1], cached[2]
+        vec, space = get_embedding_tagged(goal)
+        self._last_goal_embed = (goal, vec, space)
+        return vec, space
+
+    def _cached_embedding(self, path: Path, text: str) -> tuple[list[float], str] | None:
+        """Embedding for `text`, cached per-path and invalidated on mtime change."""
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        key = str(path)
+        cached = self._embed_cache.get(key)
+        if cached is not None and cached[2] == mtime:
+            return cached[0], cached[1]
+        vec, space = get_embedding_tagged(text)
+        self._embed_cache[key] = (vec, space, mtime)
+        return vec, space
+
     def list_skills(self, goal: str = "", k: int = 8, include_drafts: bool = True) -> list[dict[str, Any]]:
-        """Return skill manifests, rank-filtered by keyword overlap with goal."""
+        """Return skill manifests, ranked by keyword overlap plus semantic
+        similarity to `goal`. Keyword overlap alone misses a skill whose
+        description is worded differently from the goal (e.g. "clean up
+        this text" vs. a skill described as "trim and lowercase") — the
+        semantic term catches that the same way memory recall already does
+        (see core/memory.py's embedding-based retrieve)."""
         goal_words = set(re.findall(r"[a-z]+", goal.lower()))
-        scored: list[tuple[int, dict[str, Any]]] = []
+        goal_vec: list[float] | None = None
+        goal_space = ""
+        if goal.strip():
+            goal_vec, goal_space = self._goal_embedding(goal)
+        scored: list[tuple[float, dict[str, Any]]] = []
         for path in self._skill_files(include_drafts):
             try:
                 code = path.read_text(encoding="utf-8")
@@ -193,15 +245,22 @@ class SkillManager:
                 continue
             manifest = parse_manifest(code)
             name = manifest.get("name") or path.stem
-            haystack = f"{name} {manifest.get('description', '')}".lower()
-            score = sum(1 for w in goal_words if w and w in haystack)
+            description = str(manifest.get("description", ""))
+            haystack = f"{name} {description}".lower()
+            score: float = sum(1 for w in goal_words if w and w in haystack)
+            if goal_vec is not None and description:
+                embedded = self._cached_embedding(path, f"{name}: {description}")
+                if embedded is not None:
+                    vec, space = embedded
+                    if space == goal_space:
+                        score += SEMANTIC_SIM_WEIGHT * cosine(goal_vec, vec)
             # approved skills outrank drafts on ties
             if path.parent == self.approved:
                 score += 1
-            kind = manifest.get("kind") or infer_skill_kind(str(name), str(manifest.get("description") or ""))
+            kind = manifest.get("kind") or infer_skill_kind(str(name), description)
             scored.append((score, {
                 "name": name,
-                "description": manifest.get("description", ""),
+                "description": description,
                 "kind": kind,
                 "inputs": manifest.get("inputs", {}),
                 "outputs": manifest.get("outputs", {}),
@@ -380,6 +439,8 @@ class SkillManager:
         skill_kind = tested.get("kind")
         if tested.get("ok"):
             dest = self.approved / f"{safe}.py"
+            if dest.exists():
+                self._archive_previous_version(safe, dest)
             shutil.move(str(draft_path), str(dest))
             log.info("Skill promoted: %s -> %s", safe, dest)
             return {
@@ -414,6 +475,27 @@ class SkillManager:
             "test_results": results,
             "error": tested.get("error") or "tests failed; draft kept for revision",
         }
+
+    def _archive_previous_version(self, safe: str, dest: Path) -> None:
+        """Keep the skill being replaced instead of silently losing it.
+
+        create_draft() promotes a new draft over an existing approved skill
+        of the same name as soon as the new code passes its own tests — that
+        only proves the new version isn't broken, not that it's better than
+        what it's replacing. Without this, a regression that still passes
+        its own TESTS permanently overwrites the last known-good version
+        with no way back (Voyager's skill library keeps a `NameV2` alongside
+        the original for the same reason)."""
+        existing = 0
+        version_re = re.compile(rf"^{re.escape(safe)}\.v(\d+)\.py$")
+        for f in self.archived.glob(f"{safe}.v*.py"):
+            m = version_re.match(f.name)
+            if m:
+                existing = max(existing, int(m.group(1)))
+        try:
+            shutil.copy2(str(dest), str(self.archived / f"{safe}.v{existing + 1}.py"))
+        except OSError as exc:
+            log.warning("Could not archive previous version of %s before overwrite: %s", safe, exc)
 
     def archive(self, name: str) -> dict[str, Any]:
         safe = _sanitize_name(name)

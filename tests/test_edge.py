@@ -205,3 +205,15 @@ def test_port_negative_refused():
 def test_port_99999_refused():
     port, err = parse_port(99999)
     assert port is None and err == "invalid_port"
+
+
+def test_read_file_on_directory_gives_clear_error_not_raw_oserror(tmp_path: Path):
+    """Confirmed live: the model called read_file on the workspace directory
+    itself (no filename), and target.read_text() on a directory raised a raw
+    OSError — PermissionError errno 13 on Windows specifically — which reads
+    like a permissions bug and gives the model nothing to correct from."""
+    tools = _tools(tmp_path)
+    result = tools.call("read_file", {"path": "workspace"})
+    assert result["ok"] is False
+    assert "directory" in result["error"].lower()
+    assert "list_dir" in result["error"]

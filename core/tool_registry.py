@@ -124,6 +124,18 @@ class ToolRegistry:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [row for _, row in scored[:k]]
 
+    def manifest_entry(self, name: str) -> dict[str, Any] | None:
+        """Full manifest row (incl. `args` schema) for one tool, or None.
+
+        Used by core/tool_formatter.py, which needs the real arg schema —
+        `_catalog()`/`list_filtered()` deliberately strip that out to keep
+        the packet sent to the reasoning model small.
+        """
+        for row in self.manifest:
+            if isinstance(row, dict) and row.get("name") == name:
+                return row
+        return None
+
     def registered_names(self) -> frozenset[str]:
         names = set(TOOL_DOMAINS)
         for row in self.manifest:

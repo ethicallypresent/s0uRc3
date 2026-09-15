@@ -122,10 +122,20 @@ TIER_MAX_TOKENS_DEFAULTS = {
 }
 
 
-def reasoning_budget_line(tier: str) -> str:
+def reasoning_budget_line(tier: str, *, structured: bool = False) -> str:
     """One line telling the model the budget the router already decided —
     not asking it to decide. Included in the packet only; never a standing
-    instruction in the system prompt."""
+    instruction in the system prompt.
+
+    `structured` matches the wording to core/action_schema.py's mode, where
+    "think" is a schema field filled in before the rest of the object
+    rather than a separate <think>...</think> tag pair."""
+    if structured:
+        if tier == ACT:
+            return "reasoning_budget: act — leave think empty, fill only the action fields."
+        if tier == GLANCE:
+            return "reasoning_budget: glance — think in one short line (~50 tokens), then the action fields."
+        return "reasoning_budget: deliberate — think fully: want, known, uncertain, risk, next."
     if tier == ACT:
         return "reasoning_budget: act — skip <think> entirely, output only the json action."
     if tier == GLANCE:
