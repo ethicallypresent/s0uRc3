@@ -1,136 +1,49 @@
-"""Reasoning engine — selects mental models (incl. Six Thinking Hats) per turn.
+"""Reasoning engine — first-principles protocol for deliberate turns.
 
-Injects a compact scaffold into the agent packet so Kurama reasons like a
-structured thinker without bloating the system prompt.
+Two phases, gated by whether the plan is still real:
+
+  Phase 1 (break it down) fires while the task has no real plan yet —
+  state the problem plainly, surface assumptions, keep only the ones
+  that are law rather than convention, reduce to bedrock, rebuild
+  upward. It ends in `update_plan`, which is exactly what turns the
+  plan from seed to real — so it can only ever fire once per task,
+  never spin (no "breaking down forever").
+
+  Phase 2 (act from it) fires once a real plan exists — cheapest test
+  first, act on the fundamentals rather than "that's how it's usually
+  done", treat the result as evidence that updates the plan rather
+  than a verdict to defend, only build on what survived.
+
+Only ever attached on the `deliberate` tier (core/router.py decides
+that before this module runs) — act/glance turns never see this.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+_PHASE_1 = """\
+REASONING — Phase 1, break it down (no real plan yet):
+1. State the problem in one plain sentence.
+2. List 2-4 assumptions you're carrying, including invisible ones.
+3. Keep only the assumptions that are law (physics/math/logic). Drop convention.
+4. What's left is the bedrock — what you're actually sure of.
+5. From that bedrock alone, rebuild the approach.
+Then emit update_plan: the pieces as ordered nodes, one in_progress. Don't act on a node yet."""
 
-@dataclass(frozen=True)
-class MentalModel:
-    id: str
-    label: str
-    prompt: str
+_PHASE_2 = """\
+REASONING — Phase 2, act from it (plan is real):
+6. Take the cheapest step that could prove this node wrong.
+7. Act on the fundamentals, not "that's how it's usually done."
+8. Result disagrees with the plan? Update the plan, don't defend it.
+9. Build only on what just passed."""
 
-
-# Edward de Bono — Six Thinking Hats
-HATS: dict[str, MentalModel] = {
-    "white": MentalModel(
-        "white",
-        "White hat (facts)",
-        "List only verified facts, data, and tool results. Separate unknown from known.",
-    ),
-    "red": MentalModel(
-        "red",
-        "Red hat (feelings)",
-        "Note gut feel, user emotion, and confidence — no justification required.",
-    ),
-    "black": MentalModel(
-        "black",
-        "Black hat (caution)",
-        "Risks, failure modes, safety, irreversible side effects, what could go wrong.",
-    ),
-    "yellow": MentalModel(
-        "yellow",
-        "Yellow hat (benefit)",
-        "Upside, value to the user, why this path is worth taking.",
-    ),
-    "green": MentalModel(
-        "green",
-        "Green hat (creative)",
-        "Alternatives, novel approaches, skill/tool inventiveness.",
-    ),
-    "blue": MentalModel(
-        "blue",
-        "Blue hat (process)",
-        "Meta: which step are we on, what to do next, when to finish or ask.",
-    ),
-}
-
-# Extra lenses useful for agent work
-LENSES: dict[str, MentalModel] = {
-    "first_principles": MentalModel(
-        "first_principles",
-        "First principles",
-        "Strip assumptions; rebuild from basics that must be true.",
-    ),
-    "inversion": MentalModel(
-        "inversion",
-        "Inversion",
-        "How would this fail? Avoid that. What must never happen?",
-    ),
-    "second_order": MentalModel(
-        "second_order",
-        "Second-order effects",
-        "After the immediate result — what happens next for the user/system?",
-    ),
-    "occams_razor": MentalModel(
-        "occams_razor",
-        "Simplest sufficient plan",
-        "Prefer the smallest action that unblocks progress.",
-    ),
-    "premortem": MentalModel(
-        "premortem",
-        "Pre-mortem",
-        "Imagine the run already failed — name the most likely cause.",
-    ),
-    "user_intent": MentalModel(
-        "user_intent",
-        "Intent inference",
-        "If the ask is vague, state the best-guess intent and proceed unless a wrong guess is costly.",
-    ),
-}
+_TRAILER = "\nLabel each claim observed (tool/user/verified memory), inferred, or speculative."
 
 
-def select_models(goal: str, *, mode: str, step: int, last_result: dict[str, Any] | None) -> list[MentalModel]:
-    """Pick a small set of hats/lenses for this turn (keep prompt short)."""
-    g = (goal or "").lower()
-    chosen: list[str] = ["blue", "user_intent"]
-
-    if mode == "chat":
-        chosen += ["red", "yellow", "occams_razor"]
-    else:
-        chosen += ["white", "black", "occams_razor"]
-        if step <= 1:
-            chosen.append("first_principles")
-        if any(w in g for w in ("create", "design", "idea", "improve", "skill", "new")):
-            chosen.append("green")
-        if any(w in g for w in ("delete", "overwrite", "risk", "fix", "bug", "break", "secure")):
-            chosen += ["black", "premortem", "inversion"]
-        if any(w in g for w in ("plan", "multi", "project", "refactor")):
-            chosen.append("second_order")
-        if last_result and not last_result.get("ok"):
-            chosen += ["white", "inversion", "green"]
-
-    # Dedupe preserve order
-    seen: set[str] = set()
-    models: list[MentalModel] = []
-    for mid in chosen:
-        if mid in seen:
-            continue
-        seen.add(mid)
-        models.append(HATS.get(mid) or LENSES[mid])
-    return models[:6]
-
-
-def build_scaffold(goal: str, *, mode: str, step: int, last_result: dict[str, Any] | None) -> str:
-    models = select_models(goal, mode=mode, step=step, last_result=last_result)
-    lines = [
-        "REASONING_LENSES for this turn — think with each briefly inside <think>, then act:",
-    ]
-    for i, m in enumerate(models, 1):
-        lines.append(f"{i}. {m.label}: {m.prompt}")
-    lines.append(
-        "Synthesize the lenses into one clear next action. "
-        "In <think>, label each claim observed (tool/user/verified memory), "
-        "inferred, or speculative. "
-        "Do not list the hat names in the user-facing finish.summary."
-    )
-    return "\n".join(lines)
+def build_scaffold(goal: str, *, mode: str, step: int, last_result: dict[str, Any] | None, plan_seed: bool = True) -> str:
+    body = _PHASE_1 if plan_seed else _PHASE_2
+    return body + _TRAILER
 
 
 def packet_with_reasoning(
@@ -140,6 +53,7 @@ def packet_with_reasoning(
     mode: str,
     step: int,
     last_result: dict[str, Any] | None,
+    plan_seed: bool = True,
 ) -> str:
-    scaffold = build_scaffold(goal, mode=mode, step=step, last_result=last_result)
+    scaffold = build_scaffold(goal, mode=mode, step=step, last_result=last_result, plan_seed=plan_seed)
     return f"{scaffold}\n\n{packet_body}"

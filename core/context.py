@@ -128,7 +128,7 @@ def gather_context(
         return {
             "note": (
                 "Before answering, reference recalled memory, beliefs, skills, "
-                "and tools. Cite what you use in <think>."
+                "and tools. Cite what you use in your reasoning."
             ),
             "query": q,
             "brain_files": brain_files,

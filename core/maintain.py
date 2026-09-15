@@ -18,6 +18,8 @@ _LOG_NAMES = (
     "last_run.log",
     "llama_server.err.log",
     "llama_server.out.log",
+    "llama_server.functiongemma.err.log",
+    "llama_server.functiongemma.out.log",
 )
 
 

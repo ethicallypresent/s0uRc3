@@ -131,5 +131,30 @@
     "jinja": true,
     "alias": "pocket"
   },
-  "config_revision": 20
+  "tool_formatter": {
+    "enabled": true,
+    "backend": "llamacpp",
+    "model": "functiongemma",
+    "base_url": "http://127.0.0.1:8081/v1",
+    "api_key": "sk-no-key-needed",
+    "temperature": 0.0,
+    "max_tokens": 200,
+    "timeout_sec": 20,
+    "num_ctx": 4096,
+    "num_thread": 6,
+    "num_batch": 128,
+    "num_gpu": 0
+  },
+  "llama_server_tool_formatter": {
+    "auto_start": true,
+    "host": "127.0.0.1",
+    "port": 8081,
+    "model_path": "models/functiongemma.gguf",
+    "jinja": true,
+    "alias": "functiongemma"
+  },
+  "structured_output": {
+    "enabled": true
+  },
+  "config_revision": 29
 }

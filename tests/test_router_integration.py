@@ -37,13 +37,15 @@ def _packet_obj(raw_packet: str) -> dict:
     return json.loads(raw_packet.split("PACKET:\n", 1)[1])
 
 
-def _build(agent_root: Path, tier: str, *, step: int = 1, user_input: str = "read main.py") -> str:
+def _build(
+    agent_root: Path, tier: str, *, step: int = 1, user_input: str = "read main.py", structured: bool = False,
+) -> str:
     paths = AgentPaths.discover(start=agent_root)
     memory = Memory(paths.db)
     try:
         return build_user_packet(
             goal="read main.py", user_input=user_input, memory=memory,
-            tools=[], skills=[], step=step, paths=paths, tier=tier,
+            tools=[], skills=[], step=step, paths=paths, tier=tier, structured=structured,
         )
     finally:
         memory.close()
@@ -74,6 +76,34 @@ def test_deliberate_tier_still_carries_the_human_interrupt_note(agent_root: Path
     packet = _build(agent_root, DELIBERATE, step=3, user_input="actually, check the other file first")
     assert "just interrupted mid-task" in packet
     assert "reasoning_budget: deliberate" in packet
+
+
+def test_structured_act_packet_has_no_think_tag_phrasing(agent_root: Path):
+    """core/action_schema.py folds think into the response schema — the
+    packet must never tell a structured-mode model to use <think> tags,
+    since the grammar constrains the whole completion to one JSON object."""
+    packet = _build(agent_root, ACT, structured=True)
+    assert "<think>" not in packet
+    assert "leave the think field empty" in packet.lower()
+
+
+def test_structured_glance_packet_has_no_think_tag_phrasing(agent_root: Path):
+    packet = _build(agent_root, GLANCE, structured=True)
+    assert "<think>" not in packet
+    assert "~50 tokens" in packet
+
+
+def test_structured_deliberate_packet_has_no_think_tag_phrasing(agent_root: Path):
+    packet = _build(agent_root, DELIBERATE, structured=True)
+    assert "<think>" not in packet
+    assert "observed / inferred / speculative" in packet
+
+
+def test_structured_packet_never_carries_the_anti_echo_warning(agent_root: Path):
+    """Only meaningful for the free-text path — a structured completion
+    literally cannot echo the packet back and still satisfy the schema."""
+    packet = _build(agent_root, DELIBERATE, structured=True)
+    assert "never write the packet below" not in packet.lower()
 
 
 def test_no_tier_defaults_to_deliberate_not_silently_understimulated():
