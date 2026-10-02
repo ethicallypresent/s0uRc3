@@ -104,3 +104,27 @@ pip at the maintainer's own prebuilt-wheel index instead
 (`--extra-index-url` line at the top), so `pip install -r
 requirements.txt` gets a ready-to-use Windows wheel with no compiler
 needed.
+
+## Stage 4 — THE LOOP
+
+```bash
+pip install -r requirements.txt
+python loop.py
+```
+
+Wires all three pieces into one conversation: press Enter, speak, press
+Enter again, EARS transcribes it, BRAIN replies, MOUTH speaks the reply —
+repeat until you say the stop word ("goodbye" by default, change with
+`--stop-word`). Still push-to-talk on purpose: get the pipeline itself
+solid before stage 5 layers automatic turn-taking and streaming on top of
+it — same three pieces, just smarter about when to listen and faster to
+start talking.
+
+Uses your stage 2 voice pick automatically (reads
+`models/mouth/selected_voice.txt`); override with `--voice`.
+`--brain-size 1.5b` swaps in the larger model if you upgraded in stage 3.
+
+Verified in this sandbox with the mic/speaker calls mocked out and the
+transcription stepped through canned input: the LLM reply, the stop-word
+exit, and every call into EARS/BRAIN/MOUTH executed correctly end to end.
+The one thing that needs your actual hardware is hearing it.
