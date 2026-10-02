@@ -1,0 +1,6 @@
+# Stage 1 — EARS (speech-to-text)
+numpy==1.26.4
+huggingface_hub==0.23.5
+requests==2.32.3
+faster-whisper==1.0.3
+sounddevice==0.4.6

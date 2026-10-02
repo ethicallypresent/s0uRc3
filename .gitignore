@@ -41,3 +41,4 @@ Thumbs.db
 # Stale/unused local config override + ad-hoc debug scratch dir
 brain/reasoning_config.local.json
 _tmp_propose_debug/
+voice_agent/models/
