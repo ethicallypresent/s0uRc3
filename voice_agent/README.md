@@ -37,6 +37,36 @@ Flags:
 
 Don't move on to stage 2 until this reliably transcribes what you say.
 
+## Stage 2 — MOUTH
+
+```bash
+pip install -r requirements.txt
+python stage2_mouth_test.py --audition
+```
+
+Kokoro-82M is a small (82M parameter) text-to-speech model trained to
+sound natural rather than robotic — small by TTS standards, which is
+exactly why it's CPU-friendly. We run it through `kokoro-onnx`, which
+loads it as an ONNX model (a portable, runtime-optimized model format)
+via `onnxruntime` on CPU. A "voice" isn't a separate model — it's a
+different style vector fed into the same network, which is why switching
+voices is instant and free (no extra model to load).
+
+We use the **int8-quantized** model on purpose (~110MB vs. ~300MB fp32):
+same idea as stage 3's quantized LLM — compressed weights, much faster
+CPU inference, barely perceptible quality loss. That matters doubly here
+since stage 5 will stream TTS output in chunks to cut latency.
+
+`--audition` plays three candidate voices (`af_heart`, `am_michael`,
+`bf_emma`) and lets you pick one, saving your choice to
+`voice_agent/models/mouth/selected_voice.txt` so stages 4/5 pick it up
+automatically. Run `--list-voices` to see all 54 available voices (en/es/fr/
+hi/it/ja/pt/zh accents) if none of the three defaults suit you.
+
+First run downloads `kokoro-v1.0.int8.onnx` (~110MB) and `voices-v1.0.bin`
+(~27MB, all 54 voices bundled together) from the `kokoro-onnx` project's
+GitHub releases into `voice_agent/models/mouth/`.
+
 ## Stage 3 — BRAIN
 
 ```bash
