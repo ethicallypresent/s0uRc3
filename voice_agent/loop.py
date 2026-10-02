@@ -41,7 +41,10 @@ WHISPER_CACHE_DIR = Path(__file__).resolve().parent / "models" / "whisper"
 BRAIN_CACHE_DIR = Path(__file__).resolve().parent / "models" / "brain"
 MOUTH_DIR = Path(__file__).resolve().parent / "models" / "mouth"
 MOUTH_RELEASE_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
-MOUTH_MODEL_FILENAME = "kokoro-v1.0.int8.onnx"
+# fp32 is the default on purpose — see stage2_mouth_test.py's precision note:
+# int8 ONNX ops are only fast with CPU VNNI support (Zen4+/Rocket Lake+); without
+# it, int8 measured ~9x *slower* than fp32 (23s vs 2.5s/sentence on a Zen2 chip).
+MOUTH_MODEL_FILENAMES = {"fp32": "kokoro-v1.0.onnx", "int8": "kokoro-v1.0.int8.onnx"}
 MOUTH_VOICES_FILENAME = "voices-v1.0.bin"
 VOICE_CHOICE_FILE = MOUTH_DIR / "selected_voice.txt"
 DEFAULT_VOICE = "af_heart"
@@ -75,9 +78,9 @@ def load_ears(model_size: str) -> WhisperModel:
     return WhisperModel(model_size, device="cpu", compute_type="int8", download_root=str(WHISPER_CACHE_DIR))
 
 
-def load_mouth() -> Kokoro:
-    print("Loading MOUTH (Kokoro-82M, CPU int8)...")
-    model_path = _download_mouth_file(MOUTH_MODEL_FILENAME)
+def load_mouth(precision: str = "fp32") -> Kokoro:
+    print(f"Loading MOUTH (Kokoro-82M, CPU {precision})...")
+    model_path = _download_mouth_file(MOUTH_MODEL_FILENAMES[precision])
     voices_path = _download_mouth_file(MOUTH_VOICES_FILENAME)
     return Kokoro(str(model_path), str(voices_path))
 
@@ -199,6 +202,12 @@ def main() -> int:
     parser.add_argument("--brain-ctx", type=int, default=2048, help="LLM context window in tokens")
     parser.add_argument("--brain-max-tokens", type=int, default=150, help="max tokens per LLM reply")
     parser.add_argument("--voice", default=None, help="Kokoro voice (default: your stage 2 audition pick, else af_heart)")
+    parser.add_argument(
+        "--mouth-precision",
+        choices=sorted(MOUTH_MODEL_FILENAMES),
+        default="fp32",
+        help="fp32 (default, fastest without CPU VNNI) or int8 (smaller, faster only with VNNI support)",
+    )
     parser.add_argument("--speed", type=float, default=1.0, help="speech speed multiplier")
     parser.add_argument("--device", type=int, default=None, help="sounddevice input device index")
     parser.add_argument("--stop-word", default="goodbye", help="say this to end the conversation (default: goodbye)")
@@ -212,7 +221,7 @@ def main() -> int:
     args = parser.parse_args()
 
     ears = load_ears(args.ears_model)
-    mouth = load_mouth()
+    mouth = load_mouth(args.mouth_precision)
     brain = load_brain(args.brain_size, args.brain_ctx, args.brain_threads)
     voice = resolve_voice(args.voice)
     stop_word = args.stop_word.lower()

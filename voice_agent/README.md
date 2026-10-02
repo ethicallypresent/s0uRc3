@@ -52,10 +52,17 @@ via `onnxruntime` on CPU. A "voice" isn't a separate model — it's a
 different style vector fed into the same network, which is why switching
 voices is instant and free (no extra model to load).
 
-We use the **int8-quantized** model on purpose (~110MB vs. ~300MB fp32):
-same idea as stage 3's quantized LLM — compressed weights, much faster
-CPU inference, barely perceptible quality loss. That matters doubly here
-since stage 5 will stream TTS output in chunks to cut latency.
+**Default precision is fp32, not int8 — this was flipped after hardware
+testing.** The original plan was int8-quantized (~110MB vs. ~300MB fp32),
+same idea as stage 3's quantized LLM: smaller, and normally faster on
+CPU. But int8 ONNX ops are only fast with CPU VNNI support (AVX512-VNNI
+or AVX-VNNI — Intel Rocket Lake+/Alder Lake+, AMD Zen4+). Without it,
+onnxruntime's int8 path is *slower* than fp32, not faster — measured
+**~23s vs ~2.5s per sentence (9x)** on a Ryzen 5 7520U (Zen2, no VNNI),
+which is exactly the "says a sentence, pauses ~30s" symptom. fp32 is the
+safe default across unknown target hardware; pass `--precision int8`
+(stage 2) / `--mouth-precision int8` (`loop.py`) if you've confirmed your
+CPU has VNNI and want the smaller footprint.
 
 `--audition` plays three candidate voices (`af_heart`, `am_michael`,
 `bf_emma`) and lets you pick one, saving your choice to
@@ -63,9 +70,10 @@ since stage 5 will stream TTS output in chunks to cut latency.
 automatically. Run `--list-voices` to see all 54 available voices (en/es/fr/
 hi/it/ja/pt/zh accents) if none of the three defaults suit you.
 
-First run downloads `kokoro-v1.0.int8.onnx` (~110MB) and `voices-v1.0.bin`
-(~27MB, all 54 voices bundled together) from the `kokoro-onnx` project's
-GitHub releases into `voice_agent/models/mouth/`.
+First run downloads `kokoro-v1.0.onnx` (~300MB fp32, or `kokoro-v1.0.int8.onnx`
+~110MB with `--precision int8`) and `voices-v1.0.bin` (~27MB, all 54 voices
+bundled together) from the `kokoro-onnx` project's GitHub releases into
+`voice_agent/models/mouth/`.
 
 ## Stage 3 — BRAIN
 

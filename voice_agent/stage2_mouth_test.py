@@ -7,19 +7,28 @@ ONNX model via the `kokoro-onnx` package. No cloud calls, no API keys.
 
 First run downloads two files from the kokoro-onnx project's GitHub
 releases into voice_agent/models/mouth/:
-  - kokoro-v1.0.int8.onnx (~110MB) — the int8-quantized model. We use the
-    quantized version on purpose: it's ~3x smaller and faster than the
-    full fp32 model with very little audible quality loss, which matters
-    for both our 8GB RAM budget and (later) low-latency streaming.
+  - kokoro-v1.0.onnx (~300MB, default) or kokoro-v1.0.int8.onnx (~110MB,
+    `--precision int8`) — see the precision note below for why fp32 is
+    the default despite being 3x larger.
   - voices-v1.0.bin (~27MB) — a bundle of all 54 voice "style" embeddings.
     A voice here isn't a separate model, just a different style vector fed
     into the same network.
+
+**Note on precision — fp32 is the default, not int8:** int8 quantized
+ONNX ops are only fast on CPUs with VNNI (AVX512-VNNI or AVX-VNNI,
+Intel Rocket Lake+/Alder Lake+, AMD Zen4+). Without it, onnxruntime falls
+back to an unoptimized int8 path that's *slower* than fp32 — measured 9x
+slower (~23s vs ~2.5s per sentence) on a Ryzen 5 7520U (Zen2, no VNNI).
+If your CPU does have VNNI, `--precision int8` is worth trying for the
+smaller download/memory footprint — time a few sentences with both and
+keep whichever is actually faster on your hardware.
 
 Usage:
   python stage2_mouth_test.py                  # type sentences, hear af_heart (default)
   python stage2_mouth_test.py --audition        # cycle a handful of voices, pick one
   python stage2_mouth_test.py --voice am_michael
   python stage2_mouth_test.py --list-voices
+  python stage2_mouth_test.py --precision int8  # try the quantized model instead
 """
 from __future__ import annotations
 
@@ -33,7 +42,7 @@ from kokoro_onnx import Kokoro
 
 MODEL_DIR = Path(__file__).resolve().parent / "models" / "mouth"
 RELEASE_BASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
-MODEL_FILENAME = "kokoro-v1.0.int8.onnx"
+MODEL_FILENAMES = {"fp32": "kokoro-v1.0.onnx", "int8": "kokoro-v1.0.int8.onnx"}
 VOICES_FILENAME = "voices-v1.0.bin"
 VOICE_CHOICE_FILE = MODEL_DIR / "selected_voice.txt"
 
@@ -52,8 +61,8 @@ def _download(filename: str) -> Path:
     return dest
 
 
-def load_kokoro() -> Kokoro:
-    model_path = _download(MODEL_FILENAME)
+def load_kokoro(precision: str = "fp32") -> Kokoro:
+    model_path = _download(MODEL_FILENAMES[precision])
     voices_path = _download(VOICES_FILENAME)
     return Kokoro(str(model_path), str(voices_path))
 
@@ -92,10 +101,16 @@ def main() -> int:
     parser.add_argument("--speed", type=float, default=1.0, help="speech speed multiplier")
     parser.add_argument("--audition", action="store_true", help="play a few candidate voices and pick one")
     parser.add_argument("--list-voices", action="store_true", help="print all 54 available voices and exit")
+    parser.add_argument(
+        "--precision",
+        choices=sorted(MODEL_FILENAMES),
+        default="fp32",
+        help="fp32 (default, fastest without VNNI) or int8 (smaller, faster only with CPU VNNI support)",
+    )
     args = parser.parse_args()
 
-    print("Loading Kokoro-82M (CPU, int8)...")
-    kokoro = load_kokoro()
+    print(f"Loading Kokoro-82M (CPU, {args.precision})...")
+    kokoro = load_kokoro(args.precision)
     print("Model ready.\n")
 
     if args.list_voices:
