@@ -46,6 +46,22 @@ Alongside Kurama's file/web/skill tools, s0uRc3 adds the CreatorCentral gate as 
 
 See [`creatorcentral/README.md`](creatorcentral/README.md) for the standalone CLI these tools wrap.
 
+## Voice
+
+```bash
+pip install faster-whisper sounddevice pyttsx3
+python voice_agent.py
+```
+
+Fully local push-to-talk: press Enter, speak, press Enter again, hear the
+reply — `faster-whisper` (CPU) for speech-in, the same local `llama-server`
+as the other agents for the reply, `pyttsx3` for speech-out. No API keys, no
+network calls beyond the local server. Simpler than `chat_agent.py` on
+purpose: no memory, no recall, no action protocol — a voice turn is already
+slower than typing, so nothing rides along that isn't the conversation
+itself. `--text-only` skips TTS playback on a machine with no speakers;
+`--whisper-model` and `--input-device` pick the STT model and mic.
+
 ## Portable exe
 
 ```bash
