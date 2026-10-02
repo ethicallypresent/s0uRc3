@@ -9,10 +9,14 @@ Built in stages, each independently testable before being wired together.
 | 3 | BRAIN | local LLM reply (Qwen2.5 GGUF via llama-cpp-python) | `stage3_brain_test.py` |
 | 4 | LOOP | mic -> transcribe -> LLM -> speak, continuous | `loop.py` |
 | 5 | ALIVE | voice activity detection + streamed TTS for low latency | (built into `loop.py`) |
+| 6 | RESEARCH | Wikipedia lookup for factual questions, fed into BRAIN | `research_test.py` |
 
 All pieces are CPU-only — no CUDA, no GPU-only packages. Everything here
 is self-contained under `voice_agent/`; it does not depend on the rest of
-this repo.
+this repo. RESEARCH is the one exception to "no network calls beyond the
+local server" — it makes keyless HTTPS calls to Wikipedia's public API
+when BRAIN decides a question needs a lookup. `--no-research` on `loop.py`
+turns this off entirely and restores the original fully-offline behavior.
 
 ## Stage 1 — EARS
 
@@ -207,3 +211,42 @@ conversation instead of a request/response tool.
 
 Once this works reliably, that's the whole agent: `loop.py` is the one
 thing you run day to day.
+
+## Stage 6 — RESEARCH
+
+```bash
+pip install -r requirements.txt
+python research_test.py "when was the eiffel tower built"
+```
+
+Before BRAIN replies, `loop.py` asks it a second, separate question first:
+does *this* message need a fact BRAIN might not know? If yes, BRAIN also
+names a short search query; `research.py` looks that query up on
+Wikipedia's free, keyless search + page-summary API and feeds the extract
+back in as background context for the real reply. No API key, no
+scraping — `research_test.py` lets you try the Wikipedia lookup alone,
+without touching mic/TTS/the classifier.
+
+(An earlier plan was DuckDuckGo HTML scraping, also keyless — dropped
+after testing showed it's blocked by an anti-bot image challenge for any
+plain HTTP request, not usable headless at all. Wikipedia only answers
+encyclopedic questions, not current events or prices, but it's reliable
+and needs no signup.)
+
+**Honest limitation: the search-or-not decision is a 0.5B model's
+judgment call, and it's not a great one.** A quick sample: it correctly
+researched "who was marie curie" and "when was the eiffel tower built",
+but also decided plain chit-chat ("hey, how are you doing today") needed
+a search. The saving grace is that BRAIN is told to use the research note
+*if relevant, otherwise ignore it* — so a wrong guess costs a few seconds
+of wasted lookup time, not a broken reply (verified: a false-positive
+search for "how are you today?" still produced a normal conversational
+reply). If the false-positive rate bothers you in practice, `--no-research`
+turns the whole thing off and restores stage 5's behavior exactly; the
+larger `--brain-size 1.5b` model is also worth trying here since the
+search/no-search call uses whichever BRAIN size you've loaded.
+
+Flags on `loop.py`:
+- `--no-research` — disable RESEARCH entirely
+- `--research-max-chars N` — how much of the Wikipedia extract (default
+  700 chars) gets fed to BRAIN; smaller keeps replies snappier

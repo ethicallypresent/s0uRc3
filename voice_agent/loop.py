@@ -32,9 +32,20 @@ from huggingface_hub import hf_hub_download
 from kokoro_onnx import Kokoro
 from llama_cpp import Llama
 
+from research import research
 from vad import VadRecorder
 
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
+_SEARCH_DECISION_RE = re.compile(r"SEARCH:\s*(.+)", re.IGNORECASE)
+
+RESEARCH_SYSTEM_PROMPT = (
+    "Decide if answering the user's next message needs looking up facts you "
+    "might not know (people, places, history, science, specific real-world "
+    "entities) versus something you can answer directly from the "
+    "conversation itself (greetings, opinions, chit-chat, instructions, "
+    "anything already said). Reply with exactly one line: either "
+    "`SEARCH: <short Wikipedia search query>` or `NO_SEARCH`. Nothing else."
+)
 
 WHISPER_SAMPLE_RATE = 16000
 WHISPER_CACHE_DIR = Path(__file__).resolve().parent / "models" / "whisper"
@@ -134,6 +145,27 @@ def reply(llm: Llama, messages: list[dict[str, str]], max_tokens: int) -> str:
     return out["choices"][0]["message"]["content"].strip() or "I don't have anything to add to that."
 
 
+def classify_needs_research(llm: Llama, user_text: str) -> str | None:
+    """Ask BRAIN whether answering `user_text` needs a Wikipedia lookup.
+    Returns a search query string if so, else None. Fails soft to None on any
+    parsing trouble or model hiccup — a classifier miss should degrade to a
+    normal reply, never break the turn."""
+    try:
+        out = llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": RESEARCH_SYSTEM_PROMPT},
+                {"role": "user", "content": user_text},
+            ],
+            max_tokens=40,
+            temperature=0.0,
+        )
+        text = out["choices"][0]["message"]["content"].strip()
+    except Exception:  # noqa: BLE001 — classifier hiccup should never break the turn
+        return None
+    match = _SEARCH_DECISION_RE.match(text)
+    return match.group(1).strip() if match else None
+
+
 def speak(kokoro: Kokoro, text: str, voice: str, speed: float) -> None:
     if not text:
         return
@@ -218,6 +250,17 @@ def main() -> int:
     )
     parser.add_argument("--vad-aggressiveness", type=int, default=2, choices=[0, 1, 2, 3], help="0=lenient..3=strict")
     parser.add_argument("--vad-silence-ms", type=int, default=800, help="pause length that ends your turn")
+    parser.add_argument(
+        "--no-research",
+        action="store_true",
+        help="disable automatic Wikipedia research before replying (see research.py)",
+    )
+    parser.add_argument(
+        "--research-max-chars",
+        type=int,
+        default=700,
+        help="max characters of a Wikipedia extract fed to BRAIN as context",
+    )
     args = parser.parse_args()
 
     ears = load_ears(args.ears_model)
@@ -265,7 +308,26 @@ def main() -> int:
                 break
 
             messages.append({"role": "user", "content": heard})
-            text = stream_reply_and_speak(brain, messages, mouth, voice, args.speed, args.brain_max_tokens)
+
+            call_messages = messages
+            if not args.no_research:
+                query = classify_needs_research(brain, heard)
+                if query:
+                    print(f"[researching: {query}]")
+                    result = research(query, max_chars=args.research_max_chars)
+                    if result.get("ok"):
+                        print(f"[found: {result['title']}]")
+                        note = (
+                            f"Background research on '{query}' (Wikipedia, "
+                            f"{result['title']}): {result['extract']}\n\n"
+                            "Use this if it's relevant; otherwise ignore it. "
+                            "Answer naturally and briefly, as always."
+                        )
+                        call_messages = messages + [{"role": "system", "content": note}]
+                    else:
+                        print(f"[research skipped: {result.get('error')}]")
+
+            text = stream_reply_and_speak(brain, call_messages, mouth, voice, args.speed, args.brain_max_tokens)
             print(f"agent> {text}\n")
             messages.append({"role": "assistant", "content": text})
 
