@@ -1,6 +1,15 @@
-# Stage 1 — EARS (speech-to-text)
+# llama-cpp-python's prebuilt Windows/CPU wheels live on their own index,
+# not PyPI (PyPI only has the sdist, which needs a C++ compiler to build).
+--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+# Shared
 numpy==1.26.4
 huggingface_hub==0.23.5
 requests==2.32.3
+
+# Stage 1 — EARS (speech-to-text)
 faster-whisper==1.0.3
 sounddevice==0.4.6
+
+# Stage 3 — BRAIN (local LLM)
+llama-cpp-python==0.3.30

@@ -36,3 +36,41 @@ Flags:
 - `--seconds N` — change the recording length
 
 Don't move on to stage 2 until this reliably transcribes what you say.
+
+## Stage 3 — BRAIN
+
+```bash
+pip install -r requirements.txt
+python stage3_brain_test.py
+```
+
+`llama-cpp-python` is a Python binding for `llama.cpp`, the C++ engine
+that runs quantized ("GGUF") LLMs efficiently on ordinary CPUs — no GPU,
+no CUDA. "Quantized" means the model's weights are compressed from
+16-bit floats down to ~4 bits each (here, `q4_k_m`), trading a small
+amount of accuracy for a ~4x smaller file and much faster CPU inference.
+
+We're using Qwen2.5-Instruct: small enough (0.5B or 1.5B parameters) to
+reply in well under a second per turn on CPU, and instruction-tuned so it
+actually follows a "keep replies short" system prompt instead of
+rambling. `stage3_brain_test.py` is a plain type-and-reply chat loop
+against it — no memory, no voice yet, just proving the model itself
+works and responds sensibly.
+
+First run downloads the GGUF (~470MB for 0.5B, ~1.1GB for 1.5B) to
+`voice_agent/models/brain/`.
+
+Flags:
+- `--size 1.5b` — use the larger model if 0.5B's replies feel too thin
+  (still comfortably fits in 8GB RAM; slower per-token but more coherent)
+- `--threads N` — CPU threads for inference (default 4; try your core
+  count if replies feel slow)
+- `--ctx N` — context window in tokens (default 2048, plenty for a
+  voice conversation with no long documents involved)
+
+**Note on `llama-cpp-python` install:** PyPI only hosts the source
+package, which needs a C++ compiler to build. `requirements.txt` points
+pip at the maintainer's own prebuilt-wheel index instead
+(`--extra-index-url` line at the top), so `pip install -r
+requirements.txt` gets a ready-to-use Windows wheel with no compiler
+needed.
