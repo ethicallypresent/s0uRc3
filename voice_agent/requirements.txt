@@ -17,3 +17,9 @@ kokoro-onnx==0.6.1
 
 # Stage 3 — BRAIN (local LLM)
 llama-cpp-python==0.3.30
+
+# Stage 5 — ALIVE (voice activity detection)
+# "webrtcvad-wheels", not "webrtcvad": the original has no Windows wheels
+# on PyPI and needs a C compiler to build from source; this is the same
+# library (same `import webrtcvad`) prebuilt for Windows.
+webrtcvad-wheels==2.0.14

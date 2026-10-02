@@ -18,7 +18,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import queue
+import re
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -28,6 +31,10 @@ from faster_whisper import WhisperModel
 from huggingface_hub import hf_hub_download
 from kokoro_onnx import Kokoro
 from llama_cpp import Llama
+
+from vad import VadRecorder
+
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 
 WHISPER_SAMPLE_RATE = 16000
 WHISPER_CACHE_DIR = Path(__file__).resolve().parent / "models" / "whisper"
@@ -132,6 +139,58 @@ def speak(kokoro: Kokoro, text: str, voice: str, speed: float) -> None:
     sd.wait()
 
 
+def stream_reply_and_speak(
+    llm: Llama,
+    messages: list[dict[str, str]],
+    kokoro: Kokoro,
+    voice: str,
+    speed: float,
+    max_tokens: int,
+) -> str:
+    """Stream the LLM's reply token by token; as soon as a full sentence has
+    arrived, hand it to a background thread that synthesizes and plays it —
+    so speech starts after the *first sentence*, not the whole reply. The
+    LLM keeps generating the rest while that sentence plays.
+
+    This is the only piece of "stage 5" that touches BRAIN+MOUTH together;
+    EARS/BRAIN/MOUTH themselves are unchanged from stages 1-3."""
+    audio_queue: "queue.Queue[str | None]" = queue.Queue()
+
+    def _player() -> None:
+        while True:
+            sentence = audio_queue.get()
+            if sentence is None:
+                return
+            speak(kokoro, sentence, voice, speed)
+
+    player_thread = threading.Thread(target=_player, daemon=True)
+    player_thread.start()
+
+    full_text: list[str] = []
+    buffer = ""
+    stream = llm.create_chat_completion(messages=messages, max_tokens=max_tokens, temperature=0.7, stream=True)
+    for chunk in stream:
+        delta = chunk["choices"][0].get("delta", {}).get("content") or ""
+        if not delta:
+            continue
+        buffer += delta
+        full_text.append(delta)
+        while True:
+            match = _SENTENCE_END_RE.search(buffer)
+            if not match:
+                break
+            sentence, buffer = buffer[: match.end()].strip(), buffer[match.end() :]
+            if sentence:
+                audio_queue.put(sentence)
+
+    if buffer.strip():
+        audio_queue.put(buffer.strip())
+    audio_queue.put(None)
+    player_thread.join()
+
+    return "".join(full_text).strip() or "I don't have anything to add to that."
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ears-model", default="tiny.en", help="faster-whisper model size (default: tiny.en)")
@@ -143,6 +202,13 @@ def main() -> int:
     parser.add_argument("--speed", type=float, default=1.0, help="speech speed multiplier")
     parser.add_argument("--device", type=int, default=None, help="sounddevice input device index")
     parser.add_argument("--stop-word", default="goodbye", help="say this to end the conversation (default: goodbye)")
+    parser.add_argument(
+        "--push-to-talk",
+        action="store_true",
+        help="fall back to press-Enter-to-talk (stage 4 behavior) instead of automatic voice activity detection",
+    )
+    parser.add_argument("--vad-aggressiveness", type=int, default=2, choices=[0, 1, 2, 3], help="0=lenient..3=strict")
+    parser.add_argument("--vad-silence-ms", type=int, default=800, help="pause length that ends your turn")
     args = parser.parse_args()
 
     ears = load_ears(args.ears_model)
@@ -150,18 +216,33 @@ def main() -> int:
     brain = load_brain(args.brain_size, args.brain_ctx, args.brain_threads)
     voice = resolve_voice(args.voice)
     stop_word = args.stop_word.lower()
-    print(f"\nAll three pieces loaded. Voice: {voice}. Say '{args.stop_word}' to end the conversation.\n")
+    vad_recorder = (
+        None
+        if args.push_to_talk
+        else VadRecorder(aggressiveness=args.vad_aggressiveness, silence_ms=args.vad_silence_ms, device=args.device)
+    )
+    mode = "push-to-talk" if args.push_to_talk else "automatic (voice activity detection)"
+    print(f"\nAll three pieces loaded. Voice: {voice}. Turn-taking: {mode}.")
+    print(f"Say '{args.stop_word}' to end the conversation.\n")
 
     messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     try:
         while True:
-            try:
-                input("[press Enter to talk] ")
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
+            if vad_recorder is None:
+                try:
+                    input("[press Enter to talk] ")
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+                audio = record_until_enter(args.device)
+            else:
+                print("[listening...]")
+                try:
+                    audio = vad_recorder.listen()
+                except KeyboardInterrupt:
+                    print()
+                    break
 
-            audio = record_until_enter(args.device)
             heard = transcribe(ears, audio)
             if not heard:
                 print("[heard nothing]\n")
@@ -175,10 +256,9 @@ def main() -> int:
                 break
 
             messages.append({"role": "user", "content": heard})
-            text = reply(brain, messages, args.brain_max_tokens)
+            text = stream_reply_and_speak(brain, messages, mouth, voice, args.speed, args.brain_max_tokens)
             print(f"agent> {text}\n")
             messages.append({"role": "assistant", "content": text})
-            speak(mouth, text, voice, args.speed)
 
             if len(messages) > 1 + MAX_TURNS_KEPT * 2:
                 messages[:] = [messages[0]] + messages[-MAX_TURNS_KEPT * 2 :]

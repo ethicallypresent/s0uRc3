@@ -128,3 +128,46 @@ Verified in this sandbox with the mic/speaker calls mocked out and the
 transcription stepped through canned input: the LLM reply, the stop-word
 exit, and every call into EARS/BRAIN/MOUTH executed correctly end to end.
 The one thing that needs your actual hardware is hearing it.
+
+## Stage 5 — ALIVE
+
+```bash
+pip install -r requirements.txt
+python loop.py
+```
+
+Two changes on top of stage 4's exact same pipeline — nothing about
+EARS/BRAIN/MOUTH themselves changes, only when they're triggered:
+
+**Voice activity detection** (`vad.py`) replaces the Enter key. It uses
+`webrtcvad` — WebRTC's voice activity detector (the same real-time-audio
+project behind Chrome/Firefox calls), a lightweight signal-based speech
+classifier, not a neural network, so it costs almost nothing on CPU.
+`loop.py` now listens continuously: it waits for you to start speaking,
+keeps recording while you talk, and stops automatically ~800ms after you
+stop (configurable with `--vad-silence-ms`). Test it on its own first:
+
+```bash
+python vad.py
+```
+
+This just prints "captured N.NNs of speech" each time you talk and
+pause — confirm it reliably starts/stops on your actual voice and room
+noise before trusting it inside the full loop. `--aggressiveness 3` is
+stricter about what counts as speech (use it in a noisy room);
+`--silence-ms 500` ends your turn faster if 800ms feels laggy.
+`--push-to-talk` on `loop.py` falls back to stage 4's Enter-key behavior
+if VAD isn't working well for you.
+
+**Streamed TTS** (`stream_reply_and_speak` in `loop.py`) is the actual
+latency fix. Previously the agent waited for the *entire* reply to
+generate, then synthesized and played all of it. Now it watches the
+LLM's token stream for a complete sentence (ends in `.`/`!`/`?`), hands
+that sentence to a background thread to synthesize and play immediately,
+and keeps generating the next sentence while the current one is already
+playing. You hear the first sentence as soon as it's ready instead of
+waiting for the whole answer — this is most of what makes it feel like a
+conversation instead of a request/response tool.
+
+Once this works reliably, that's the whole agent: `loop.py` is the one
+thing you run day to day.
