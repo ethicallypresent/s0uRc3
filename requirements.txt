@@ -1,6 +1,11 @@
 # Runtime extras. Dry-run tests still run with stdlib only (do not import tui from core).
 textual>=0.80.0
 
+# voice_agent.py — fully local STT/TTS, no API keys
+faster-whisper>=1.0.0
+sounddevice>=0.4.6
+pyttsx3>=2.90
+
 # Dev / test
 pytest>=8.0.0
 
