@@ -339,15 +339,6 @@ class Memory:
         self.ltm = LongTermMemory(db_dir)
         self.user_id = user_id
 
-    def seed_goal(self, goal: str) -> None:
-        self.wm.current_goal = goal
-        from core.plan import normalize_plan
-
-        self.wm.active_plan = normalize_plan(
-            [{"id": "n1", "title": "Clarify goal and constraints", "status": "in_progress", "depends_on": [], "note": ""}]
-        )
-        self.wm.note(f"goal set: {goal}")
-
     def retrieve(self, query: str, k: int = 5) -> list[dict[str, Any]]:
         return self.ltm.retrieve(query, k=k, user_id=self.user_id)
 
