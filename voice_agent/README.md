@@ -105,6 +105,34 @@ pip at the maintainer's own prebuilt-wheel index instead
 requirements.txt` gets a ready-to-use Windows wheel with no compiler
 needed.
 
+**Troubleshooting: crashes with `OSError: [WinError -1073741795]
+0xc000001d` (STATUS_ILLEGAL_INSTRUCTION) on model load.** The
+maintainer's prebuilt Windows wheel is compiled with AVX512 instructions.
+Most CPUs support AVX2 but not AVX512 — in particular every mobile/laptop
+AMD Ryzen chip up through Zen3 (this includes the 7020/7030/7040-series
+"U" chips, which are Zen2/Zen3 despite the Ryzen-7000-era model number)
+and most pre-2021 Intel CPUs. If `python -c "import llama_cpp;
+print(llama_cpp.llama_cpp.llama_print_system_info().decode())"` prints
+`AVX512 = 1`, that's the cause — the binary has no runtime fallback, it
+just executes an instruction your CPU doesn't have.
+
+Fix: rebuild `llama-cpp-python` from source with AVX512 off and
+AVX2/FMA on, using a local C++ compiler (Visual Studio Build Tools) and
+CMake instead of the prebuilt wheel. Run `rebuild_llama_cpp_no_avx512.bat`
+(needs CMake and the MSVC Build Tools installed — `winget install
+Kitware.CMake` and `winget install Microsoft.VisualStudio.2022.BuildTools`
+if you don't have them) after the normal `pip install -r
+requirements.txt`, or by hand:
+
+```bat
+call "<path to>\VC\Auxiliary\Build\vcvarsall.bat" x64
+set CMAKE_ARGS=-DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_AVX=ON -DGGML_F16C=ON
+.venv\Scripts\python.exe -m pip install llama-cpp-python==0.3.30 --no-binary llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+Re-run the system-info check above afterward to confirm `AVX512` is gone
+from the line and `AVX2`/`FMA` are still `1`.
+
 ## Stage 4 — THE LOOP
 
 ```bash

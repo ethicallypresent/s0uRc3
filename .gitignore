@@ -42,3 +42,4 @@ Thumbs.db
 brain/reasoning_config.local.json
 _tmp_propose_debug/
 voice_agent/models/
+voice_agent/.venv/
