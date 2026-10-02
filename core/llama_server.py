@@ -10,6 +10,7 @@ import atexit
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -18,6 +19,78 @@ from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("agent.llama_server")
+
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _contains_nul(value: Any) -> bool:
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, bytes):
+        return b"\x00" in value
+    return False
+
+
+def _reject(code: str, *, detail: str = "") -> dict[str, Any]:
+    extra = f" {detail}" if detail else ""
+    log.error("REJECT llama_server/%s%s", code, extra)
+    return {"ok": False, "error": code}
+
+
+def _parse_port(raw: Any) -> tuple[int | None, str | None]:
+    """Allowlist: integer in [1, 65535]. Strings that are not digits fail."""
+    if isinstance(raw, bool):
+        return None, "invalid_port"
+    if isinstance(raw, int):
+        port = raw
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        port = int(raw.strip())
+    else:
+        return None, "invalid_port"
+    if port < 1 or port > 65535:
+        return None, "invalid_port"
+    return port, None
+
+
+def _allowed_gguf(root: Path, model_path: str | Path) -> tuple[Path | None, str | None]:
+    """Allowlist: existing *.gguf whose resolved path is under <root>/models/."""
+    raw = str(model_path or "")
+    if not raw or _contains_nul(raw):
+        return None, "invalid_model_path"
+    models = (root / "models").resolve()
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None, "invalid_model_path"
+    if resolved.suffix.lower() != ".gguf":
+        return None, "not_a_gguf"
+    try:
+        resolved.relative_to(models)
+    except ValueError:
+        return None, "model_not_under_models"
+    if not resolved.is_file():
+        return None, "model_not_found"
+    return resolved, None
+
+
+def _validate_launch(
+    *, root: Path, model_path: str | Path, port: Any, alias: str, host: str
+) -> dict[str, Any]:
+    """Refuse hostile spawn parameters before any process is created."""
+    if _contains_nul(host) or _contains_nul(alias):
+        return _reject("invalid_model_path", detail="nul in host/alias")
+    if not _ALIAS_RE.match(str(alias or "")):
+        return _reject("invalid_alias", detail=repr(alias))
+    port_i, port_err = _parse_port(port)
+    if port_err:
+        return _reject(port_err)
+    gguf, path_err = _allowed_gguf(root, model_path)
+    if path_err:
+        return _reject(path_err)
+    return {"ok": True, "model": gguf, "port": port_i, "alias": str(alias), "host": str(host)}
 
 _proc: subprocess.Popen[str] | None = None
 _model_path: str | None = None
@@ -238,9 +311,8 @@ def ensure_running(
 ) -> dict[str, Any]:
     """Ensure llama-server is serving. Starts one if needed. Returns status dict."""
     global _proc, _model_path
-    from core.launcher import parse_port, validate_launch
 
-    port_i, port_err = parse_port(port)
+    port_i, port_err = _parse_port(port)
     if port_err:
         return {"ok": False, "error": port_err, "from": "launcher", "observed": {}}
     base = f"http://{host}:{port_i}/v1"
@@ -258,7 +330,7 @@ def ensure_running(
         log.info("llama-server already healthy at %s ids=%s", base, live_ids)
         return {"ok": True, "started": False, "base_url": base, "ids": live_ids}
 
-    gate = validate_launch(
+    gate = _validate_launch(
         root=root,
         model_path=model_path,
         port=port_i,

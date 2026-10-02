@@ -1,1 +1,0 @@
-{"model":"models\\pocket.gguf","messages":[{"role":"user","content":"say hi in five words"}],"max_tokens":32,"temperature":0.2}

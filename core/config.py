@@ -28,6 +28,33 @@ class ConfigError(ValueError):
     """Hostile or malformed reasoning_config.json."""
 
 
+def _parse_port(raw: Any) -> tuple[int | None, str | None]:
+    """Allowlist: integer in [PORT_MIN, PORT_MAX]. Strings that are not digits fail."""
+    if isinstance(raw, bool):
+        return None, "invalid_port"
+    if isinstance(raw, int):
+        port = raw
+    elif isinstance(raw, str) and raw.strip().isdigit():
+        port = int(raw.strip())
+    else:
+        return None, "invalid_port"
+    if port < PORT_MIN or port > PORT_MAX:
+        return None, "invalid_port"
+    return port, None
+
+
+def _contains_nul(value: Any) -> bool:
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, bytes):
+        return b"\x00" in value
+    if isinstance(value, dict):
+        return any(_contains_nul(k) or _contains_nul(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_nul(item) for item in value)
+    return False
+
+
 def backup_path(config_path: Path) -> Path:
     return config_path.with_name(config_path.name + ".bak")
 
@@ -58,17 +85,13 @@ def validate(cfg: Any) -> list[str]:
     if ls and not isinstance(ls, dict):
         issues.append("llama_server_not_object")
     elif isinstance(ls, dict) and ls.get("port") is not None:
-        from core.launcher import parse_port
-
-        _port, err = parse_port(ls["port"])
+        _port, err = _parse_port(ls["port"])
         if err:
             issues.append("invalid_port")
     model_path = str((ls or {}).get("model_path") or "")
     if model_path:
-        from core.boundary import contains_nul
-
         posix = Path(model_path).as_posix()
-        if contains_nul(model_path) or ".." in Path(model_path).parts:
+        if _contains_nul(model_path) or ".." in Path(model_path).parts:
             issues.append("model_path_nul")
         elif not posix.endswith(".gguf") or not posix.startswith("models/"):
             issues.append("model_not_under_models")

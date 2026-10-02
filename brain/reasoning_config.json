@@ -1,111 +1,16 @@
 {
-  "config_version": "1.1",
-  "constitution_version": "1.1",
-  "model": "pocket",
-  "base_url": "http://127.0.0.1:8080/v1",
-  "fallback_model": "pocket",
-  "backend": "llamacpp",
-  "fallback_triggers": [
-    "timeout",
-    "rate_limit",
-    "5xx_error",
-    "malformed_output"
-  ],
-  "temperature": 0.25,
-  "max_tokens": 1200,
-  "max_steps": 50,
-  "max_actions_per_run": 200,
-  "max_concurrent_processes": 1,
-  "max_cost_usd_per_run": 2.0,
-  "step_timeout_sec": 60,
-  "max_skill_drafts_per_run": 3,
-  "refine_max_passes": 3,
-  "skill_test_required_before_use": true,
-  "skill_revalidate_on_dependency_change": true,
-  "skill_pass_result_ttl_sec": 86400,
-  "tool_topk": 8,
-  "memory_topk": 10,
-  "skill_topk": 8,
-  "approved_skill_topk": 8,
-  "draft_skill_topk": 0,
-  "code_runner_timeout_sec": 15,
-  "code_runner_max_output_chars": 8000,
-  "code_runner_network_enabled": false,
-  "code_runner_allowed_paths": [
-    "workspace/",
-    "skills/drafts/"
-  ],
-  "require_think_block": false,
-  "think_block_must_cite_source": false,
-  "think_block_min_chars": 1,
-  "creation": {
-    "energy_per_step": 1.0,
-    "full_ctx_threshold": 8192
-  },
-  "allowed_actions": [
-    "use_tool",
-    "create_skill",
-    "refine_code",
-    "update_plan",
-    "save_memory",
-    "propose_long_term_memory",
-    "request_confirmation",
-    "finish"
-  ],
-  "destructive_action_types": [
-    "delete_file",
-    "overwrite_file",
-    "move_file",
-    "send_external_message",
-    "payment",
-    "irreversible_api_call"
-  ],
-  "destructive_action_default_when_ambiguous": "require_confirmation",
-  "confirmation_required_field": "confirm",
-  "confirmation_must_be_current_turn": true,
-  "protected_prefixes": [
-    "brain/",
-    "core/",
-    "tools/_core/",
-    "skills/_core/",
-    "db/"
-  ],
-  "writable_prefixes": [
-    "workspace/",
-    "skills/drafts/"
-  ],
-  "read_only_overrides_writable": true,
-  "memory_tags": [
-    "fact",
-    "lesson",
-    "preference",
-    "failure",
-    "constraint"
-  ],
-  "memory_promotion_requires_review": true,
-  "log_raw_transcripts": false,
-  "memory_conflict_policy": "report_do_not_resolve_silently",
-  "rule_conflict_precedence": [
-    "harm_and_mutation",
-    "truth",
-    "identity",
-    "verification_before_promotion",
-    "memory_hygiene"
-  ],
-  "on_unresolvable_rule_conflict": "finish",
+  "config_version": "2.0",
   "llm": {
     "backend": "llamacpp",
     "base_url": "http://127.0.0.1:8080/v1",
     "model": "pocket",
     "api_key": "sk-no-key-needed",
-    "temperature": 0.25,
-    "max_tokens": 1200,
-    "timeout_sec": 600,
+    "temperature": 0.7,
+    "max_tokens": 500,
+    "timeout_sec": 300,
     "dry_run_on_no_server": true,
     "warmup": true,
     "keep_alive": "5m",
-    "embedding_model": "(hash fallback \u2014 no embed server)",
-    "embedding_url": "http://127.0.0.1:8080/v1",
     "num_ctx": 32768,
     "num_batch": 512,
     "num_gpu": 0,
@@ -113,15 +18,7 @@
     "top_p": 0.9,
     "top_k": 40,
     "repeat_penalty": 1.1,
-    "repeat_last_n": 256,
-    "dry_multiplier": 0.8,
-    "dry_base": 1.75,
-    "dry_allowed_length": 2,
-    "dry_penalty_last_n": 512,
-    "mirostat": 0,
-    "load_preset": "cpu_optimal",
-    "auto_resource_alloc": true,
-    "fallback_model": "pocket"
+    "load_preset": "cpu_optimal"
   },
   "llama_server": {
     "auto_start": true,
@@ -131,5 +28,5 @@
     "jinja": true,
     "alias": "pocket"
   },
-  "config_revision": 20
+  "config_revision": 1
 }

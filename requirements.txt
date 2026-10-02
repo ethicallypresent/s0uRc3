@@ -1,8 +1,2 @@
-# Runtime extras. Dry-run tests still run with stdlib only (do not import tui from core).
-textual>=0.80.0
-
 # Dev / test
 pytest>=8.0.0
-
-# Portable exe (scripts/publish_portable.py)
-# pyinstaller>=6.0.0
